@@ -294,6 +294,11 @@
         color: var(--tertiary);
         padding: 0 4px 12px;
       }
+      .privacy-note {
+        font-size: 11px;
+        color: var(--tertiary);
+        margin: -4px 4px 12px;
+      }
       .ops {
         display: flex;
         flex-wrap: wrap;
@@ -307,6 +312,33 @@
         background: var(--surface-2);
         color: var(--muted);
       }
+      .chart-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+      @media (min-width: 720px) {
+        .chart-grid { grid-template-columns: repeat(2, 1fr); }
+      }
+      .chart {
+        background: var(--bg-card);
+        border: 0.5px solid var(--border);
+        border-radius: 14px;
+        box-shadow: var(--shadow);
+        padding: 14px 16px 10px;
+      }
+      .chart h2 {
+        font-size: 13px;
+        font-weight: 600;
+        margin-bottom: 8px;
+      }
+      .chart svg { width: 100%; height: 118px; display: block; overflow: visible; }
+      .chart .line { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+      .chart .area { fill: var(--accent-soft); }
+      .chart .gridline { stroke: var(--border); stroke-width: 1; }
+      .chart .axis { fill: var(--tertiary); font: 10px var(--font-sans); }
+      .chart .legend { font-size: 11px; color: var(--tertiary); margin-top: 4px; }
     </style>
   </head>
   <body data-i18n-title-key="obs.title">
@@ -348,7 +380,21 @@
 
       <main>
         <p class="status-line" id="status-line" data-i18n="obs.loading">加载中…</p>
+        <p class="privacy-note">请求内容日志可能包含私人记忆；可通过 /settings/telemetry 调整记录级别。</p>
         <div class="kpi-row" id="kpi-row"></div>
+
+        <div class="chart-grid">
+          <section class="chart">
+            <h2>请求量与错误</h2>
+            <svg id="requests-chart" viewBox="0 0 520 118" role="img" aria-label="请求量与错误趋势"></svg>
+            <div class="legend" id="requests-chart-meta">—</div>
+          </section>
+          <section class="chart">
+            <h2>P50 / P95 响应时间</h2>
+            <svg id="latency-chart" viewBox="0 0 520 118" role="img" aria-label="响应时间趋势"></svg>
+            <div class="legend" id="latency-chart-meta">—</div>
+          </section>
+        </div>
 
         <div class="section">
           <div class="section-head">
@@ -491,8 +537,12 @@
         const hours = document.getElementById("hours").value
         document.getElementById("status-line").textContent = "刷新中…"
         try {
-          const data = await api("/analytics/overview?hours=" + hours)
+          const [data, timeseries] = await Promise.all([
+            api("/analytics/overview?hours=" + hours),
+            api("/analytics/timeseries?hours=" + hours),
+          ])
           renderKpi(data)
+          renderCharts(timeseries.points || [])
           renderOps(data.top_operations || [])
           await loadLogs()
           document.getElementById("status-line").textContent =
@@ -509,12 +559,13 @@
         const cards = [
           { label: "请求次数", value: r.count ?? 0, hint: "错误 " + (r.errors ?? 0) },
           { label: "成功率", value: fmtPct(r.success_rate), hint: "平均 " + fmtMs(r.avg_ms) },
-          { label: "最大延迟", value: fmtMs(r.max_ms), hint: "窗口内峰值" },
+          { label: "P95 延迟", value: fmtMs(r.p95_ms), hint: "成功请求" },
           {
             label: "模型调用",
             value: m.count ?? 0,
             hint: "Token " + (m.tokens ?? 0) + " · 失败 " + (m.errors ?? 0),
           },
+          { label: "预估费用", value: m.cost_usd == null ? "—" : "$" + Number(m.cost_usd).toFixed(2), hint: "仅统计已知价格" },
         ]
         document.getElementById("kpi-row").innerHTML = cards
           .map(
@@ -528,6 +579,37 @@
         // extra row for memory events in status
         document.getElementById("logs-meta").textContent =
           "记忆写入 " + (mem.created ?? 0) + " · 召回 " + (mem.recalled ?? 0)
+      }
+
+      function renderCharts(points) {
+        renderLineChart("requests-chart", points, ["requests", "errors"])
+        renderLineChart("latency-chart", points, ["p50_ms", "p95_ms"])
+        const total = points.reduce((sum, point) => sum + Number(point.requests || 0), 0)
+        document.getElementById("requests-chart-meta").textContent = "小时点 " + points.length + " · 请求 " + total
+        const peak = points.reduce((max, point) => Math.max(max, Number(point.p95_ms || 0)), 0)
+        document.getElementById("latency-chart-meta").textContent = "峰值 P95 " + fmtMs(peak)
+      }
+
+      function renderLineChart(id, points, keys) {
+        const svg = document.getElementById(id)
+        if (!svg) return
+        const width = 520, height = 118, padX = 8, padY = 12
+        const values = points.flatMap((point) => keys.map((key) => Number(point[key] || 0)))
+        const max = Math.max(...values, 1)
+        const x = (index) => points.length <= 1 ? width / 2 : padX + (index * (width - padX * 2)) / (points.length - 1)
+        const y = (value) => height - padY - (value / max) * (height - padY * 2)
+        const lines = keys.map((key, seriesIndex) => {
+          const coords = points.map((point, index) => `${x(index).toFixed(1)},${y(Number(point[key] || 0)).toFixed(1)}`).join(" ")
+          return `<polyline class="line" style="stroke:${seriesIndex ? "var(--danger)" : "var(--accent)"}" points="${coords}" />`
+        }).join("")
+        const markers = keys.map((key, seriesIndex) => points.map((point, index) =>
+          `<circle cx="${x(index).toFixed(1)}" cy="${y(Number(point[key] || 0)).toFixed(1)}" r="${points.length === 1 ? 3 : 1.8}" fill="${seriesIndex ? "var(--danger)" : "var(--accent)"}" />`
+        ).join("")).join("")
+        const grid = [0.25, 0.5, 0.75].map((ratio) => {
+          const yy = y(max * ratio).toFixed(1)
+          return `<line class="gridline" x1="${padX}" x2="${width - padX}" y1="${yy}" y2="${yy}" />`
+        }).join("")
+        svg.innerHTML = points.length ? `${grid}${lines}${markers}` : `<text class="axis" x="${width / 2}" y="${height / 2}" text-anchor="middle">暂无数据</text>`
       }
 
       function renderOps(ops) {

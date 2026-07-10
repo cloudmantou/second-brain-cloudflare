@@ -19,6 +19,14 @@ export class SqliteD1Database {
     return { count: 0, duration: 0 };
   }
 
+  /** D1-compatible atomic batch used by telemetry and other bulk writes. */
+  async batch(statements: SqliteD1PreparedStatement[]): Promise<D1Result[]> {
+    const runBatch = this.db.transaction(() => {
+      return statements.map((statement) => statement.runSync());
+    });
+    return runBatch();
+  }
+
   /** Escape hatch for self-host internals (vector/KV tables). */
   raw(): Database.Database {
     return this.db;
@@ -65,6 +73,10 @@ class SqliteD1PreparedStatement {
   }
 
   async run(): Promise<D1Result> {
+    return this.runSync();
+  }
+
+  runSync(): D1Result {
     const stmt = this.db.prepare(this.sql);
     const info = stmt.run(...this.params);
     return {

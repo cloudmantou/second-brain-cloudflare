@@ -21,5 +21,6 @@ describe("telemetry redact", () => {
     expect(routeToOperation("POST", "/capture")).toBe("memory.capture");
     expect(routeToOperation("GET", "/recall")).toBe("memory.recall");
     expect(routeToOperation("POST", "/import")).toBe("memory.import");
+    expect(routeToOperation("PUT", "/settings/telemetry")).toBe("settings.telemetry");
   });
 });

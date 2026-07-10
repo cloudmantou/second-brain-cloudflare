@@ -18,6 +18,49 @@ export const DEFAULT_TELEMETRY_CONFIG: TelemetryConfig = {
   storeModelResponses: false,
 };
 
+const CONTENT_LOGGING_MODES: readonly ContentLoggingMode[] = [
+  "off",
+  "metadata",
+  "preview",
+  "full",
+];
+
+function asBoolean(value: unknown, fallback: boolean): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    if (value.toLowerCase() === "true") return true;
+    if (value.toLowerCase() === "false") return false;
+  }
+  return fallback;
+}
+
+/** Validate persisted or user-provided telemetry settings at the boundary. */
+export function normalizeTelemetryConfig(
+  input: Partial<TelemetryConfig> | null | undefined
+): TelemetryConfig {
+  const value = input ?? {};
+  const mode = CONTENT_LOGGING_MODES.includes(value.contentLogging as ContentLoggingMode)
+    ? (value.contentLogging as ContentLoggingMode)
+    : DEFAULT_TELEMETRY_CONFIG.contentLogging;
+  const previewMaxChars = Number(value.previewMaxChars);
+  const retentionDays = Number(value.retentionDays);
+
+  return {
+    telemetryEnabled: asBoolean(value.telemetryEnabled, DEFAULT_TELEMETRY_CONFIG.telemetryEnabled),
+    contentLogging: mode,
+    previewMaxChars: Number.isFinite(previewMaxChars)
+      ? Math.min(Math.max(Math.round(previewMaxChars), 50), 5000)
+      : DEFAULT_TELEMETRY_CONFIG.previewMaxChars,
+    retentionDays: Number.isFinite(retentionDays)
+      ? Math.min(Math.max(Math.round(retentionDays), 1), 3650)
+      : DEFAULT_TELEMETRY_CONFIG.retentionDays,
+    storeModelResponses: asBoolean(
+      value.storeModelResponses,
+      DEFAULT_TELEMETRY_CONFIG.storeModelResponses
+    ),
+  };
+}
+
 export interface RequestLog {
   id: string;
   trace_id: string;

@@ -13,6 +13,7 @@ import type {
 import { DEFAULT_TELEMETRY_CONFIG } from "./types";
 import { getTelemetryConfig, getTelemetryStore, getTraceId } from "./context";
 import { previewText } from "./redact";
+import { hourBucket, TELEMETRY_HOUR_MS } from "./analytics";
 
 const MAX_QUEUE = 5000;
 const FLUSH_EVERY_MS = 500;
@@ -61,11 +62,7 @@ export async function flushTelemetry(db?: D1Database): Promise<void> {
   flushing = true;
   const batch = queue.splice(0, FLUSH_BATCH * 5);
   try {
-    for (const ev of batch) {
-      if (ev.kind === "request") await insertRequest(database, ev.data);
-      else if (ev.kind === "model_call") await insertModelCall(database, ev.data);
-      else if (ev.kind === "memory_event") await insertMemoryEvent(database, ev.data);
-    }
+    await insertTelemetryBatch(database, batch);
   } catch (e) {
     console.error("[telemetry] flush failed:", e);
     // Drop failed batch — do not re-queue forever
@@ -78,8 +75,27 @@ export async function flushTelemetry(db?: D1Database): Promise<void> {
   }
 }
 
-async function insertRequest(db: D1Database, d: RequestLog): Promise<void> {
-  await db
+async function insertTelemetryBatch(db: D1Database, events: TelemetryEvent[]): Promise<void> {
+  const statements = events.map((event) => {
+    if (event.kind === "request") return requestStatement(db, event.data);
+    if (event.kind === "model_call") return modelCallStatement(db, event.data);
+    return memoryEventStatement(db, event.data);
+  });
+
+  // D1 batch is the atomic/batched equivalent of a SQLite transaction. The
+  // fallback keeps lightweight test doubles and older adapters compatible.
+  const batch = (db as D1Database & {
+    batch?: (statements: D1PreparedStatement[]) => Promise<unknown>;
+  }).batch;
+  if (typeof batch === "function") {
+    await batch.call(db, statements);
+    return;
+  }
+  for (const statement of statements) await statement.run();
+}
+
+function requestStatement(db: D1Database, d: RequestLog): D1PreparedStatement {
+  return db
     .prepare(
       `INSERT INTO sb_request_logs (
         id, trace_id, method, route, operation, source, status_code, success,
@@ -104,12 +120,11 @@ async function insertRequest(db: D1Database, d: RequestLog): Promise<void> {
       d.content_hash,
       d.error_code,
       d.error_message
-    )
-    .run();
+    );
 }
 
-async function insertModelCall(db: D1Database, d: ModelCallLog): Promise<void> {
-  await db
+function modelCallStatement(db: D1Database, d: ModelCallLog): D1PreparedStatement {
+  return db
     .prepare(
       `INSERT INTO sb_model_calls (
         id, trace_id, call_type, provider, model, duration_ms, status,
@@ -133,12 +148,11 @@ async function insertModelCall(db: D1Database, d: ModelCallLog): Promise<void> {
       d.output_preview,
       d.error_message,
       d.created_at
-    )
-    .run();
+    );
 }
 
-async function insertMemoryEvent(db: D1Database, d: MemoryEventLog): Promise<void> {
-  await db
+function memoryEventStatement(db: D1Database, d: MemoryEventLog): D1PreparedStatement {
+  return db
     .prepare(
       `INSERT INTO sb_memory_events (
         id, trace_id, memory_id, event_type, source, metadata_json, created_at
@@ -152,8 +166,76 @@ async function insertMemoryEvent(db: D1Database, d: MemoryEventLog): Promise<voi
       d.source,
       d.metadata_json,
       d.created_at
-    )
-    .run();
+    );
+}
+
+/** Persist one completed hour into the long-lived aggregate table. */
+export async function aggregateTelemetryHour(
+  db: D1Database,
+  bucketAt = hourBucket(Date.now() - TELEMETRY_HOUR_MS)
+): Promise<{ bucketAt: number; metrics: number }> {
+  const nextBucket = bucketAt + TELEMETRY_HOUR_MS;
+  const [requests, models, memories] = await Promise.all([
+    db
+      .prepare(
+        `SELECT COUNT(*) AS count,
+                COALESCE(SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END), 0) AS errors,
+                COALESCE(SUM(duration_ms), 0) AS duration_sum
+         FROM sb_request_logs WHERE started_at >= ? AND started_at < ?`
+      )
+      .bind(bucketAt, nextBucket)
+      .first<Record<string, unknown>>(),
+    db
+      .prepare(
+        `SELECT
+           COALESCE(SUM(CASE WHEN call_type = 'chat' THEN 1 ELSE 0 END), 0) AS chat_count,
+           COALESCE(SUM(CASE WHEN call_type = 'embedding' THEN 1 ELSE 0 END), 0) AS embedding_count,
+           COALESCE(SUM(input_tokens), 0) AS input_tokens,
+           COALESCE(SUM(output_tokens), 0) AS output_tokens,
+           COALESCE(SUM(estimated_cost_usd), 0) AS cost
+         FROM sb_model_calls WHERE created_at >= ? AND created_at < ?`
+      )
+      .bind(bucketAt, nextBucket)
+      .first<Record<string, unknown>>(),
+    db
+      .prepare(
+        `SELECT
+           COALESCE(SUM(CASE WHEN event_type = 'created' THEN 1 ELSE 0 END), 0) AS created,
+           COALESCE(SUM(CASE WHEN event_type = 'recalled' THEN 1 ELSE 0 END), 0) AS recalled
+         FROM sb_memory_events WHERE created_at >= ? AND created_at < ?`
+      )
+      .bind(bucketAt, nextBucket)
+      .first<Record<string, unknown>>(),
+  ]);
+
+  const metrics: Array<[string, number]> = [
+    ["request.count", Number(requests?.count ?? 0)],
+    ["request.error_count", Number(requests?.errors ?? 0)],
+    ["request.duration_sum", Number(requests?.duration_sum ?? 0)],
+    ["llm.count", Number(models?.chat_count ?? 0)],
+    ["llm.input_tokens", Number(models?.input_tokens ?? 0)],
+    ["llm.output_tokens", Number(models?.output_tokens ?? 0)],
+    ["llm.cost", Number(models?.cost ?? 0)],
+    ["embedding.count", Number(models?.embedding_count ?? 0)],
+    ["memory.created", Number(memories?.created ?? 0)],
+    ["memory.recalled", Number(memories?.recalled ?? 0)],
+  ];
+  const statements = metrics.map(([metric, value]) =>
+    db
+      .prepare(
+        `INSERT INTO sb_metrics_hourly (bucket_at, metric, dimension, value)
+         VALUES (?, ?, '', ?)
+         ON CONFLICT(bucket_at, metric, dimension)
+         DO UPDATE SET value = excluded.value`
+      )
+      .bind(bucketAt, metric, value)
+  );
+  const batch = (db as D1Database & {
+    batch?: (statements: D1PreparedStatement[]) => Promise<unknown>;
+  }).batch;
+  if (typeof batch === "function") await batch.call(db, statements);
+  else for (const statement of statements) await statement.run();
+  return { bucketAt, metrics: metrics.length };
 }
 
 function newId(): string {

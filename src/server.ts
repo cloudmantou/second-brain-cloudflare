@@ -159,12 +159,15 @@ async function main() {
     await handleWithWorker(req, reply, env);
   });
 
+  let lastMaintenanceHour = "";
   setInterval(() => {
-    if (new Date().getUTCHours() !== 1) return;
+    const hour = new Date().toISOString().slice(0, 13);
+    if (hour === lastMaintenanceHour) return;
+    lastMaintenanceHour = hour;
     worker
       .scheduled({} as ScheduledEvent, env, createExecutionContext())
       .catch((err) => console.error("[scheduled]", err));
-  }, 60 * 60 * 1000);
+  }, 60 * 1000);
 
   await app.listen({ port: PORT, host: HOST });
   const displayHost = HOST === "0.0.0.0" ? "127.0.0.1" : HOST;

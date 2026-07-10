@@ -28,6 +28,7 @@ import {
 import { importEntries, parseImportPayload, type ImportMode } from "./import-entries";
 import {
   bindTelemetryDb,
+  aggregateTelemetryHour,
   ensureTelemetryTables,
   flushTelemetry,
   getTelemetryConfig,
@@ -36,6 +37,8 @@ import {
   newTraceId,
   previewText,
   purgeOldTelemetry,
+  percentile,
+  normalizeTelemetryConfig,
   routeToOperation,
   runWithTelemetryAsync,
   DEFAULT_TELEMETRY_CONFIG,
@@ -74,7 +77,7 @@ export interface Env {
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
 };
 
@@ -309,10 +312,21 @@ async function loadTelemetryConfig(env: Env): Promise<TelemetryConfig> {
       .bind("telemetry_config")
       .first<{ value: string }>();
     if (!row?.value) return { ...DEFAULT_TELEMETRY_CONFIG };
-    return { ...DEFAULT_TELEMETRY_CONFIG, ...JSON.parse(row.value) };
+    return normalizeTelemetryConfig(JSON.parse(row.value));
   } catch {
     return { ...DEFAULT_TELEMETRY_CONFIG };
   }
+}
+
+async function saveTelemetryConfig(env: Env, config: TelemetryConfig): Promise<void> {
+  await ensureSettingsTable(env.DB);
+  const now = Date.now();
+  await env.DB.prepare(
+    `INSERT INTO sb_app_settings (key, value, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+  )
+    .bind("telemetry_config", JSON.stringify(config), now)
+    .run();
 }
 
 // ─── Duplicate detection ──────────────────────────────────────────────────────
@@ -1121,6 +1135,20 @@ async function runNightlyCompression(env: Env, ctx: ExecutionContext): Promise<v
     } catch (e) {
       console.error(`Compression failed for tag "${tag}" (non-fatal):`, e);
     }
+  }
+}
+
+async function runScheduledMaintenance(env: Env, ctx: ExecutionContext): Promise<void> {
+  await ensureDatabase(env);
+  await flushTelemetry(env.DB);
+  await aggregateTelemetryHour(env.DB);
+
+  // Keep raw rows bounded while retaining the hourly series. Compression is
+  // intentionally still once per day because it calls the configured LLM.
+  if (new Date().getUTCHours() === 1) {
+    const config = await loadTelemetryConfig(env);
+    await purgeOldTelemetry(env.DB, config.retentionDays);
+    await runNightlyCompression(env, ctx);
   }
 }
 
@@ -2880,6 +2908,35 @@ const defaultHandler = {
       });
     }
 
+    // GET /settings/telemetry — privacy and retention controls
+    if (url.pathname === "/settings/telemetry" && request.method === "GET") {
+      const authErr = requireAuth(request, env);
+      if (authErr) return authErr;
+      return json({ ok: true, telemetry: await loadTelemetryConfig(env) });
+    }
+
+    // PUT /settings/telemetry — validate before persisting user-controlled values
+    if (url.pathname === "/settings/telemetry" && request.method === "PUT") {
+      const authErr = requireAuth(request, env);
+      if (authErr) return authErr;
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        return json({ ok: false, error: "Invalid JSON" }, 400);
+      }
+      if (!body || typeof body !== "object" || Array.isArray(body)) {
+        return json({ ok: false, error: "telemetry config must be an object" }, 400);
+      }
+      const current = await loadTelemetryConfig(env);
+      const config = normalizeTelemetryConfig({
+        ...current,
+        ...(body as Partial<TelemetryConfig>),
+      });
+      await saveTelemetryConfig(env, config);
+      return json({ ok: true, telemetry: config });
+    }
+
     // GET /analytics/overview — Observatory KPIs (last 24h by default)
     if (url.pathname === "/analytics/overview" && request.method === "GET") {
       const authErr = requireAuth(request, env);
@@ -2888,37 +2945,43 @@ const defaultHandler = {
       const hours = Math.min(Math.max(parseInt(url.searchParams.get("hours") ?? "24", 10) || 24, 1), 168);
       const since = Date.now() - hours * 3_600_000;
 
-      const reqStats = await env.DB.prepare(
+      const [reqStats, modelStats, memStats, latencyRows, topOps] = await Promise.all([
+        env.DB.prepare(
         `SELECT COUNT(*) as n,
                 SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as errors,
                 AVG(duration_ms) as avg_ms,
                 MAX(duration_ms) as max_ms
          FROM sb_request_logs WHERE started_at >= ?`
-      ).bind(since).first() as Record<string, any> | null;
-
-      const modelStats = await env.DB.prepare(
-        `SELECT COUNT(*) as n,
-                SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors,
-                SUM(COALESCE(total_tokens, 0)) as tokens,
-                AVG(duration_ms) as avg_ms
-         FROM sb_model_calls WHERE created_at >= ?`
-      ).bind(since).first() as Record<string, any> | null;
-
-      const memStats = await env.DB.prepare(
-        `SELECT
-           SUM(CASE WHEN event_type = 'created' THEN 1 ELSE 0 END) as created,
-           SUM(CASE WHEN event_type = 'recalled' THEN 1 ELSE 0 END) as recalled
-         FROM sb_memory_events WHERE created_at >= ?`
-      ).bind(since).first() as Record<string, any> | null;
-
-      const topOps = await env.DB.prepare(
-        `SELECT operation, COUNT(*) as n, AVG(duration_ms) as avg_ms
-         FROM sb_request_logs WHERE started_at >= ?
-         GROUP BY operation ORDER BY n DESC LIMIT 10`
-      ).bind(since).all();
+        ).bind(since).first<Record<string, unknown>>(),
+        env.DB.prepare(
+          `SELECT COUNT(*) as n,
+                  SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors,
+                  SUM(COALESCE(input_tokens, 0)) as input_tokens,
+                  SUM(COALESCE(output_tokens, 0)) as output_tokens,
+                  SUM(COALESCE(total_tokens, 0)) as tokens,
+                  SUM(estimated_cost_usd) as cost_usd,
+                  AVG(duration_ms) as avg_ms
+           FROM sb_model_calls WHERE created_at >= ?`
+        ).bind(since).first<Record<string, unknown>>(),
+        env.DB.prepare(
+          `SELECT
+             SUM(CASE WHEN event_type = 'created' THEN 1 ELSE 0 END) as created,
+             SUM(CASE WHEN event_type = 'recalled' THEN 1 ELSE 0 END) as recalled
+           FROM sb_memory_events WHERE created_at >= ?`
+        ).bind(since).first<Record<string, unknown>>(),
+        env.DB.prepare(
+          `SELECT duration_ms FROM sb_request_logs WHERE started_at >= ? AND success = 1`
+        ).bind(since).all<{ duration_ms: number }>(),
+        env.DB.prepare(
+          `SELECT operation, COUNT(*) as n, AVG(duration_ms) as avg_ms
+           FROM sb_request_logs WHERE started_at >= ?
+           GROUP BY operation ORDER BY n DESC LIMIT 10`
+        ).bind(since).all(),
+      ]);
 
       const n = Number(reqStats?.n ?? 0);
       const errors = Number(reqStats?.errors ?? 0);
+      const durations = (latencyRows.results ?? []).map((row) => Number(row.duration_ms));
 
       return json({
         ok: true,
@@ -2929,11 +2992,15 @@ const defaultHandler = {
           success_rate: n ? (n - errors) / n : 1,
           avg_ms: reqStats?.avg_ms ?? null,
           max_ms: reqStats?.max_ms ?? null,
+          p95_ms: percentile(durations, 0.95),
         },
         models: {
           count: Number(modelStats?.n ?? 0),
           errors: Number(modelStats?.errors ?? 0),
           tokens: Number(modelStats?.tokens ?? 0),
+          input_tokens: Number(modelStats?.input_tokens ?? 0),
+          output_tokens: Number(modelStats?.output_tokens ?? 0),
+          cost_usd: modelStats?.cost_usd == null ? null : Number(modelStats.cost_usd),
           avg_ms: modelStats?.avg_ms ?? null,
         },
         memories: {
@@ -2945,23 +3012,118 @@ const defaultHandler = {
       });
     }
 
+    // GET /analytics/timeseries — one point per hour for charts.
+    if (url.pathname === "/analytics/timeseries" && request.method === "GET") {
+      const authErr = requireAuth(request, env);
+      if (authErr) return authErr;
+      await ensureTelemetryTables(env.DB);
+      const hours = Math.min(Math.max(parseInt(url.searchParams.get("hours") ?? "24", 10) || 24, 1), 168);
+      const since = Date.now() - hours * 3_600_000;
+      const [requests, models, memories, requestDurations] = await Promise.all([
+        env.DB.prepare(
+          `SELECT CAST(started_at / 3600000 AS INTEGER) * 3600000 AS bucket_at,
+                  COUNT(*) AS requests,
+                  SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS errors,
+                  AVG(duration_ms) AS avg_ms
+           FROM sb_request_logs WHERE started_at >= ?
+           GROUP BY bucket_at ORDER BY bucket_at`
+        ).bind(since).all(),
+        env.DB.prepare(
+          `SELECT CAST(created_at / 3600000 AS INTEGER) * 3600000 AS bucket_at,
+                  SUM(CASE WHEN call_type = 'chat' THEN 1 ELSE 0 END) AS calls,
+                  SUM(COALESCE(input_tokens, 0)) AS input_tokens,
+                  SUM(COALESCE(output_tokens, 0)) AS output_tokens,
+                  SUM(estimated_cost_usd) AS cost_usd
+           FROM sb_model_calls WHERE created_at >= ?
+           GROUP BY bucket_at ORDER BY bucket_at`
+        ).bind(since).all(),
+        env.DB.prepare(
+          `SELECT CAST(created_at / 3600000 AS INTEGER) * 3600000 AS bucket_at,
+                  SUM(CASE WHEN event_type = 'created' THEN 1 ELSE 0 END) AS created,
+                  SUM(CASE WHEN event_type = 'recalled' THEN 1 ELSE 0 END) AS recalled
+           FROM sb_memory_events WHERE created_at >= ?
+           GROUP BY bucket_at ORDER BY bucket_at`
+        ).bind(since).all(),
+        env.DB.prepare(
+          `SELECT CAST(started_at / 3600000 AS INTEGER) * 3600000 AS bucket_at,
+                  duration_ms
+           FROM sb_request_logs WHERE started_at >= ? AND success = 1`
+        ).bind(since).all(),
+      ]);
+      const points = new Map<number, Record<string, number>>();
+      const point = (bucketAt: unknown) => {
+        const bucket = Number(bucketAt);
+        const current = points.get(bucket) ?? { bucket_at: bucket };
+        points.set(bucket, current);
+        return current;
+      };
+      for (const row of requests.results ?? []) {
+        Object.assign(point(row.bucket_at), {
+          requests: Number(row.requests ?? 0),
+          errors: Number(row.errors ?? 0),
+          avg_ms: Number(row.avg_ms ?? 0),
+        });
+      }
+      for (const row of models.results ?? []) {
+        Object.assign(point(row.bucket_at), {
+          model_calls: Number(row.calls ?? 0),
+          input_tokens: Number(row.input_tokens ?? 0),
+          output_tokens: Number(row.output_tokens ?? 0),
+          cost_usd: row.cost_usd == null ? null : Number(row.cost_usd),
+        });
+      }
+      for (const row of memories.results ?? []) {
+        Object.assign(point(row.bucket_at), {
+          memories_created: Number(row.created ?? 0),
+          memories_recalled: Number(row.recalled ?? 0),
+        });
+      }
+      const durationsByBucket = new Map<number, number[]>();
+      for (const row of requestDurations.results ?? []) {
+        const bucket = Number(row.bucket_at);
+        const durations = durationsByBucket.get(bucket) ?? [];
+        durations.push(Number(row.duration_ms));
+        durationsByBucket.set(bucket, durations);
+      }
+      for (const [bucket, durations] of durationsByBucket) {
+        Object.assign(point(bucket), {
+          p50_ms: percentile(durations, 0.5),
+          p95_ms: percentile(durations, 0.95),
+        });
+      }
+      return json({
+        ok: true,
+        hours,
+        points: [...points.values()].sort((a, b) => a.bucket_at - b.bucket_at),
+      });
+    }
+
     // GET /analytics/logs — recent request logs
     if (url.pathname === "/analytics/logs" && request.method === "GET") {
       const authErr = requireAuth(request, env);
       if (authErr) return authErr;
       await ensureTelemetryTables(env.DB);
       const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") ?? "50", 10) || 50, 1), 200);
+      const conditions = ["1 = 1"];
+      const bindings: Array<string | number> = [];
       const op = url.searchParams.get("operation")?.trim();
-      let q;
-      if (op) {
-        q = await env.DB.prepare(
-          `SELECT * FROM sb_request_logs WHERE operation = ? ORDER BY started_at DESC LIMIT ?`
-        ).bind(op, limit).all();
-      } else {
-        q = await env.DB.prepare(
-          `SELECT * FROM sb_request_logs ORDER BY started_at DESC LIMIT ?`
-        ).bind(limit).all();
+      const source = url.searchParams.get("source")?.trim();
+      const success = url.searchParams.get("success");
+      const query = url.searchParams.get("q")?.trim();
+      const traceId = url.searchParams.get("trace_id")?.trim();
+      if (op) { conditions.push("operation = ?"); bindings.push(op); }
+      if (source) { conditions.push("source = ?"); bindings.push(source); }
+      if (success === "true" || success === "false") {
+        conditions.push("success = ?");
+        bindings.push(success === "true" ? 1 : 0);
       }
+      if (query) { conditions.push("content_preview LIKE ?"); bindings.push(`%${query.slice(0, 100)}%`); }
+      if (traceId) { conditions.push("trace_id = ?"); bindings.push(traceId.slice(0, 100)); }
+      bindings.push(limit);
+      const q = await env.DB.prepare(
+        `SELECT * FROM sb_request_logs WHERE ${conditions.join(" AND ")}
+         ORDER BY started_at DESC LIMIT ?`
+      ).bind(...bindings).all();
       return json({ ok: true, logs: q.results ?? [] });
     }
 
@@ -3064,6 +3226,6 @@ export default {
   fetch: (req: Request, env: Env, ctx: ExecutionContext) =>
     oauthProvider.fetch(req, env as any, ctx),
   scheduled: async (_event: ScheduledEvent, env: Env, ctx: ExecutionContext) => {
-    ctx.waitUntil(runNightlyCompression(env, ctx));
+    ctx.waitUntil(runScheduledMaintenance(env, ctx));
   },
 };

@@ -5,6 +5,7 @@
 
 import type { ChatMessage, ChatOptions, LLMProvider } from "./llm";
 import type { EmbeddingProvider } from "./embedding";
+import { logModelCall } from "../telemetry/queue";
 
 export const DEFAULT_WORKERS_LLM_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct";
 export const DEFAULT_WORKERS_EMBEDDING_MODEL = "@cf/baai/bge-small-en-v1.5";
@@ -76,6 +77,8 @@ export class WorkersAILLM implements LLMProvider {
   ) {}
 
   async chat(messages: ChatMessage[], options: ChatOptions = {}): Promise<string> {
+    const started = Date.now();
+    const input = messages.map((message) => message.content).join("\n");
     const payload: Record<string, unknown> = {
       messages,
       max_tokens: options.max_tokens,
@@ -84,22 +87,93 @@ export class WorkersAILLM implements LLMProvider {
     // Only set stream when explicitly true — derivePattern tests assert stream is undefined.
     if (options.stream === true) payload.stream = true;
 
-    const result = (await this.ai.run(this.model as any, payload as any)) as unknown;
-
-    if (isReadableStream(result)) {
-      return readCfSseText(result);
+    try {
+      const result = (await this.ai.run(this.model as any, payload as any)) as unknown;
+      const content = isReadableStream(result)
+        ? await readCfSseText(result)
+        : extractWorkersText(result);
+      logModelCall({
+        call_type: "chat",
+        provider: "workers-ai",
+        model: this.model,
+        duration_ms: Date.now() - started,
+        status: "success",
+        input,
+        output: content,
+      });
+      return content;
+    } catch (error) {
+      logModelCall({
+        call_type: "chat",
+        provider: "workers-ai",
+        model: this.model,
+        duration_ms: Date.now() - started,
+        status: "error",
+        input,
+        error_message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
     }
-    return extractWorkersText(result);
   }
 
   async chatAsCfSse(messages: ChatMessage[], options: ChatOptions = {}): Promise<ReadableStream> {
-    const stream = (await this.ai.run(this.model as any, {
-      messages,
-      max_tokens: options.max_tokens,
-      temperature: options.temperature,
-      stream: true,
-    } as any)) as ReadableStream;
-    return stream;
+    const started = Date.now();
+    const input = messages.map((message) => message.content).join("\n");
+    try {
+      const stream = (await this.ai.run(this.model as any, {
+        messages,
+        max_tokens: options.max_tokens,
+        temperature: options.temperature,
+        stream: true,
+      } as any)) as ReadableStream;
+      if (!isReadableStream(stream)) throw new Error("Workers AI chat stream missing");
+      const reader = stream.getReader();
+      let settled = false;
+      const record = (status: "success" | "error", error?: unknown) => {
+        if (settled) return;
+        settled = true;
+        logModelCall({
+          call_type: "chat",
+          provider: "workers-ai",
+          model: this.model,
+          duration_ms: Date.now() - started,
+          status,
+          input,
+          error_message: error instanceof Error ? error.message : error ? String(error) : null,
+        });
+      };
+      return new ReadableStream({
+        async pull(controller) {
+          try {
+            const next = await reader.read();
+            if (next.done) {
+              record("success");
+              controller.close();
+            } else {
+              controller.enqueue(next.value);
+            }
+          } catch (error) {
+            record("error", error);
+            controller.error(error);
+          }
+        },
+        async cancel(reason) {
+          record("error", reason);
+          await reader.cancel(reason);
+        },
+      });
+    } catch (error) {
+      logModelCall({
+        call_type: "chat",
+        provider: "workers-ai",
+        model: this.model,
+        duration_ms: Date.now() - started,
+        status: "error",
+        input,
+        error_message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   }
 }
 
@@ -110,13 +184,35 @@ export class WorkersAIEmbedding implements EmbeddingProvider {
   ) {}
 
   async embed(text: string): Promise<number[]> {
-    const result = (await this.ai.run(this.model as any, { text: [text] })) as {
-      data?: number[][];
-    };
-    const vector = result?.data?.[0];
-    if (!Array.isArray(vector)) {
-      throw new Error("Workers AI embedding response missing data[0]");
+    const started = Date.now();
+    try {
+      const result = (await this.ai.run(this.model as any, { text: [text] })) as {
+        data?: number[][];
+      };
+      const vector = result?.data?.[0];
+      if (!Array.isArray(vector)) {
+        throw new Error("Workers AI embedding response missing data[0]");
+      }
+      logModelCall({
+        call_type: "embedding",
+        provider: "workers-ai",
+        model: this.model,
+        duration_ms: Date.now() - started,
+        status: "success",
+        input: text,
+      });
+      return vector;
+    } catch (error) {
+      logModelCall({
+        call_type: "embedding",
+        provider: "workers-ai",
+        model: this.model,
+        duration_ms: Date.now() - started,
+        status: "error",
+        input: text,
+        error_message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
     }
-    return vector;
   }
 }

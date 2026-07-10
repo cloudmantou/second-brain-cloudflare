@@ -60,6 +60,7 @@ export function routeToOperation(method: string, pathname: string): string {
   if (p === "/chat" && method === "POST") return "llm.chat";
   if (p === "/digest" && method === "GET") return "maintenance.digest";
   if (p.startsWith("/settings/models")) return "settings.models";
+  if (p.startsWith("/settings/telemetry")) return "settings.telemetry";
   if (p.startsWith("/analytics")) return "analytics";
   if (p === "/mcp" || p.startsWith("/mcp")) return "mcp";
   if (p === "/list") return "memory.list";
