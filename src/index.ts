@@ -56,6 +56,7 @@ import {
   resolvePublicOrigin,
   rewriteRequestPublicOrigin,
 } from "./oauth/public-origin";
+import { hardenOAuthResponse, oauthMethodProbe } from "./oauth/harden";
 
 export interface Env {
   DB: D1Database;
@@ -240,14 +241,18 @@ function requireAuth(request: Request, env: Env): Response | null {
 
 // Hosted OAuth login page. Styled to match the dashboard's token-entry card
 // (#auth-overlay in public/index.html) — same fonts, palette, and layout.
-function loginHtml(error?: string): string {
+function loginHtml(error?: string, actionUrl?: string): string {
+  // Keep query string (client_id, redirect_uri, PKCE, state) across POST
+  const action = actionUrl
+    ? actionUrl.replace(/"/g, "&quot;")
+    : "";
   return `<!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta name="theme-color" content="#F4F1EA" />
-  <title>Second Brain</title>
+  <title>授权 · 第二大脑</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css" />
@@ -277,18 +282,20 @@ function loginHtml(error?: string): string {
     button:hover { background: var(--accent-press); }
     button:active { transform: scale(0.985); }
     .auth-error { font-size: 13px; color: var(--danger); text-align: center; margin-top: 10px; min-height: 18px; }
+    .hint { font-size: 12px; color: var(--text-tertiary); text-align: center; margin-top: 8px; line-height: 1.5; }
   </style>
 </head>
 <body>
   <div class="auth-card">
     <div class="brain-logo"><i class="ti ti-brain"></i></div>
-    <h1>Second Brain</h1>
-    <p>Enter your Bearer token to connect to your personal memory layer.</p>
-    <form method="POST">
-      <input type="password" name="password" placeholder="Bearer token" autofocus autocomplete="current-password" />
-      <button type="submit">Connect</button>
+    <h1>第二大脑</h1>
+    <p>授权 ChatGPT / MCP 客户端访问你的记忆。请输入服务器上的 AUTH_TOKEN（Bearer 令牌）。</p>
+    <form method="POST" action="${action}">
+      <input type="password" name="password" placeholder="AUTH_TOKEN" autofocus autocomplete="current-password" />
+      <button type="submit">授权连接</button>
     </form>
     <div class="auth-error">${error ? error : ""}</div>
+    <p class="hint">仅个人实例使用。同意后将跳回客户端并完成 OAuth。</p>
   </div>
 </body>
 </html>`;
@@ -2054,6 +2061,8 @@ const defaultHandler = {
 
     // OAuth authorize endpoint — hosted login page for browser-based MCP clients.
     if (url.pathname === "/oauth/authorize") {
+      // Preserve full public URL (incl. query) so POST keeps PKCE / redirect_uri / state
+      const formAction = url.pathname + url.search;
       let oauthReq: any;
       try {
         // workers-oauth-provider mis-parses POST bodies; pass a URL-only GET clone
@@ -2061,26 +2070,38 @@ const defaultHandler = {
         const parseReq = request.method === "POST" ? new Request(request.url, { method: "GET" }) : request;
         oauthReq = await (env as any).OAUTH_PROVIDER.parseAuthRequest(parseReq);
       } catch {
-        return new Response("Invalid authorization request — this page must be opened by an MCP client.", {
-          status: 400, headers: { "Content-Type": "text/plain" },
-        });
+        return new Response(
+          "Invalid authorization request — open this page via ChatGPT/MCP OAuth (must include client_id, redirect_uri, response_type=code, code_challenge).",
+          { status: 400, headers: { "Content-Type": "text/plain; charset=utf-8" } }
+        );
       }
       if (request.method === "POST") {
         const form = await request.formData();
         if (form.get("password") !== env.AUTH_TOKEN) {
-          return new Response(loginHtml("Invalid token"), {
-            status: 401, headers: { "Content-Type": "text/html" },
+          return new Response(loginHtml("令牌无效 / Invalid token", formAction), {
+            status: 401, headers: { "Content-Type": "text/html; charset=utf-8" },
           });
         }
+        // Default scope to mcp when client omits scope
+        const rawScope = oauthReq.scope;
+        const scope = Array.isArray(rawScope)
+          ? rawScope.length
+            ? rawScope
+            : ["mcp"]
+          : typeof rawScope === "string" && rawScope.trim()
+            ? rawScope.split(/\s+/).filter(Boolean)
+            : ["mcp"];
         const { redirectTo } = await (env as any).OAUTH_PROVIDER.completeAuthorization({
           request: oauthReq,
           userId: "owner",
-          scope: oauthReq.scope,
+          scope,
           props: { userId: "owner" },
         });
         return Response.redirect(redirectTo, 302);
       }
-      return new Response(loginHtml(), { headers: { "Content-Type": "text/html" } });
+      return new Response(loginHtml(undefined, formAction), {
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      });
     }
 
     await ensureDatabase(env);
@@ -3237,6 +3258,11 @@ const oauthProvider = new OAuthProvider({
   authorizeEndpoint: "/oauth/authorize",
   tokenEndpoint: "/oauth/token",
   clientRegistrationEndpoint: "/oauth/register",
+  scopesSupported: ["mcp"],
+  // ChatGPT / modern MCP clients use S256 PKCE
+  allowPlainPKCE: false,
+  // Public clients (token_endpoint_auth_method=none) are allowed for PKCE
+  accessTokenTTL: 3600,
   // Accept the static AUTH_TOKEN for Claude Desktop + mcp-remote (no browser flow).
   resolveExternalToken: async ({ token, env }) => {
     if (token === (env as Env).AUTH_TOKEN) {
@@ -3290,9 +3316,25 @@ export default {
     const discovery = await handleOAuthDiscovery(req, env);
     if (discovery) return discovery;
 
-    // 2) Normalize origin so token WWW-Authenticate + redirects use public HTTPS
-    const normalized = rewriteRequestPublicOrigin(req, env as Env & { PUBLIC_URL?: string });
-    return oauthProvider.fetch(normalized, env as any, ctx);
+    const url = new URL(req.url);
+
+    // 2) Friendly GET/HEAD probes for token/register (diagnostics / curl -I)
+    const probe = oauthMethodProbe(req, url.pathname);
+    if (probe) return probe;
+
+    // 3) Normalize origin so token WWW-Authenticate + redirects use public HTTPS
+    const normalized = rewriteRequestPublicOrigin(
+      req,
+      env as Env & { PUBLIC_URL?: string }
+    );
+    const response = await oauthProvider.fetch(normalized, env as any, ctx);
+
+    // 4) Absolute registration_client_uri + CORS for ChatGPT
+    return hardenOAuthResponse(
+      normalized,
+      response,
+      env as Env & { PUBLIC_URL?: string }
+    );
   },
   scheduled: async (_event: ScheduledEvent, env: Env, ctx: ExecutionContext) => {
     ctx.waitUntil(runScheduledMaintenance(env, ctx));
