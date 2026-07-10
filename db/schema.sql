@@ -15,3 +15,35 @@ CREATE TABLE IF NOT EXISTS entries (
 
 CREATE INDEX IF NOT EXISTS idx_entries_created_at ON entries(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_entries_source ON entries(source);
+
+CREATE TABLE IF NOT EXISTS sb_memory_relations (
+  id             TEXT PRIMARY KEY,
+  from_memory_id TEXT NOT NULL,
+  to_memory_id   TEXT NOT NULL,
+  relation_type  TEXT NOT NULL,
+  score           REAL,
+  metadata_json   TEXT NOT NULL DEFAULT '{}',
+  created_at      INTEGER NOT NULL,
+  UNIQUE(from_memory_id, to_memory_id, relation_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sb_memory_relations_from
+  ON sb_memory_relations(from_memory_id, relation_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sb_memory_relations_to
+  ON sb_memory_relations(to_memory_id, relation_type, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS sb_memory_revisions (
+  id                TEXT PRIMARY KEY,
+  memory_id         TEXT NOT NULL,
+  event_type        TEXT NOT NULL,
+  old_content       TEXT,
+  new_content       TEXT,
+  old_metadata_json TEXT,
+  new_metadata_json TEXT,
+  reason            TEXT,
+  actor             TEXT NOT NULL,
+  created_at        INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sb_memory_revisions_memory
+  ON sb_memory_revisions(memory_id, created_at ASC);

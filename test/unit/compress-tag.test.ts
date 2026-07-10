@@ -150,15 +150,28 @@ describe("compressTag()", () => {
     });
   });
 
-  it("appends [Digest: {id}] to each source entry's content", async () => {
+  it("keeps source content immutable and records digest_of relations", async () => {
     seedEntries(db, "work", 12);
+    const originalContent = new Map(db.entries.map(entry => [entry.id, entry.content]));
     const { ctx, drain } = makeCtx();
     const result = await compressTag("work", env, ctx);
     await drain();
     const sources = db.entries.filter(e => !JSON.parse(e.tags).includes("synthesized"));
     sources.forEach(e => {
-      expect(e.content).toContain(`[Digest: ${result.synthesizedId}]`);
+      expect(e.content).toBe(originalContent.get(e.id));
     });
+    expect(db.relations).toHaveLength(12);
+    expect(db.relations).toEqual(
+      expect.arrayContaining(
+        sources.map(source =>
+          expect.objectContaining({
+            from_memory_id: result.synthesizedId,
+            to_memory_id: source.id,
+            relation_type: "digest_of",
+          })
+        )
+      )
+    );
   });
 
   it("returns entriesUsed equal to the number of source entries", async () => {
@@ -230,6 +243,13 @@ describe("compressTag()", () => {
 
   it("protects contradiction survivors (contradiction_wins > 0) from compression", async () => {
     seedEntries(db, "work", 12, { contradiction_wins: 1 });
+    const { ctx } = makeCtx();
+    const result = await compressTag("work", env, ctx);
+    expect(result.synthesizedId).toBeNull();
+  });
+
+  it("protects contradiction losers from being recycled into current digests", async () => {
+    seedEntries(db, "work", 12, { contradiction_losses: 1 });
     const { ctx } = makeCtx();
     const result = await compressTag("work", env, ctx);
     expect(result.synthesizedId).toBeNull();

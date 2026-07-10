@@ -56,6 +56,14 @@ describe("POST /append", () => {
     expect(data.ok).toBe(true);
     expect(db.entries[0].content).toContain("Original content");
     expect(db.entries[0].content).toContain("New info");
+    expect(db.revisions).toContainEqual(
+      expect.objectContaining({
+        memory_id: "entry-1",
+        event_type: "APPEND",
+        old_content: "Original content",
+        new_content: expect.stringContaining("New info"),
+      })
+    );
   });
 
   // ── Short append: append-only path (≤ CHUNK_MAX_CHARS) ──────────────────────
@@ -252,5 +260,6 @@ describe("POST /append", () => {
     expect(res.status).toBe(500);
     const data = await res.json() as any;
     expect(data.ok).toBe(false);
+    expect(data.error).not.toContain("Vectorize unavailable");
   });
 });

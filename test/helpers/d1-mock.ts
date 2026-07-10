@@ -2,6 +2,8 @@ import { COMPRESSION_IMPORTANCE_THRESHOLD, COMPRESSION_MIN_RECALL } from "../../
 
 export class D1Mock {
   entries: any[] = [];
+  relations: any[] = [];
+  revisions: any[] = [];
 
   prepare(sql: string) {
     const s = sql.replace(/\s+/g, " ").trim();
@@ -9,6 +11,56 @@ export class D1Mock {
 
     const makeStmt = (args: any[]) => ({
       async run() {
+        if (s.startsWith("INSERT INTO sb_memory_relations")) {
+          const [id, from_memory_id, to_memory_id, relation_type, score, metadata_json, created_at] = args;
+          db.relations.push({ id, from_memory_id, to_memory_id, relation_type, score, metadata_json, created_at });
+          return { meta: { changes: 1 } };
+        }
+        if (s.startsWith("INSERT INTO sb_memory_revisions")) {
+          const [
+            id,
+            memory_id,
+            event_type,
+            old_content,
+            new_content,
+            old_metadata_json,
+            new_metadata_json,
+            reason,
+            actor,
+            created_at,
+          ] = args;
+          db.revisions.push({
+            id,
+            memory_id,
+            event_type,
+            old_content,
+            new_content,
+            old_metadata_json,
+            new_metadata_json,
+            reason,
+            actor,
+            created_at,
+          });
+          return { meta: { changes: 1 } };
+        }
+        if (s.startsWith("DELETE FROM sb_memory_relations")) {
+          const ids = new Set(args.map(String));
+          const before = db.relations.length;
+          db.relations = db.relations.filter(
+            (relation: any) =>
+              !ids.has(String(relation.from_memory_id)) &&
+              !ids.has(String(relation.to_memory_id))
+          );
+          return { meta: { changes: before - db.relations.length } };
+        }
+        if (s.startsWith("DELETE FROM sb_memory_revisions")) {
+          const memoryIds = new Set(args.map(String));
+          const before = db.revisions.length;
+          db.revisions = db.revisions.filter(
+            (revision: any) => !memoryIds.has(String(revision.memory_id))
+          );
+          return { meta: { changes: before - db.revisions.length } };
+        }
         if (s.startsWith("INSERT INTO entries")) {
           if (args.length >= 10) {
             const [id, content, tags, source, created_at, vector_ids, recall_count, importance_score, contradiction_wins, contradiction_losses] = args;
@@ -121,9 +173,9 @@ export class D1Mock {
           return { meta: { changes: row ? 1 : 0 } };
         }
         if (s.startsWith("DELETE FROM entries WHERE id")) {
-          const [id] = args;
+          const ids = new Set(args.map(String));
           const before = db.entries.length;
-          db.entries = db.entries.filter((e: any) => e.id !== id);
+          db.entries = db.entries.filter((e: any) => !ids.has(String(e.id)));
           return { meta: { changes: before - db.entries.length } };
         }
         return { meta: {} };
@@ -181,6 +233,83 @@ export class D1Mock {
         return null;
       },
       async all() {
+        if (
+          s.includes("SELECT id, from_memory_id, to_memory_id, relation_type") &&
+          s.includes("FROM sb_memory_relations")
+        ) {
+          const memoryId = String(args[0]);
+          const limit = Number(args[args.length - 1]);
+          const results = db.relations
+            .filter(
+              (relation: any) =>
+                String(relation.from_memory_id) === memoryId ||
+                String(relation.to_memory_id) === memoryId
+            )
+            .sort((a: any, b: any) => Number(b.created_at ?? 0) - Number(a.created_at ?? 0))
+            .slice(0, limit);
+          return { results };
+        }
+        if (s.includes("SELECT from_memory_id") && s.includes("FROM sb_memory_relations")) {
+          const targetIds = new Set(args.map(String));
+          const results = db.relations
+            .filter(
+              (relation: any) =>
+                ["digest_of", "derived_from"].includes(relation.relation_type) &&
+                targetIds.has(String(relation.to_memory_id))
+            )
+            .map((relation: any) => ({ from_memory_id: relation.from_memory_id }));
+          return { results };
+        }
+        if (s.includes("SELECT to_memory_id") && s.includes("FROM sb_memory_relations")) {
+          const derivedIds = new Set(args.map(String));
+          const results = db.relations
+            .filter(
+              (relation: any) =>
+                relation.relation_type === "digest_of" &&
+                derivedIds.has(String(relation.from_memory_id))
+            )
+            .map((relation: any) => ({ to_memory_id: relation.to_memory_id }));
+          return { results };
+        }
+        if (s.includes("SELECT id, vector_ids FROM entries") && s.includes("WHERE id IN")) {
+          const ids = new Set(args.map(String));
+          const results = db.entries
+            .filter((entry: any) => ids.has(String(entry.id)))
+            .map((entry: any) => ({ id: entry.id, vector_ids: entry.vector_ids ?? "[]" }));
+          return { results };
+        }
+        if (
+          s.includes("SELECT id, content, tags, source, created_at") &&
+          s.includes("FROM entries WHERE id IN") &&
+          !s.includes("tags NOT LIKE")
+        ) {
+          const ids = new Set(args.map(String));
+          const results = db.entries
+            .filter((entry: any) => ids.has(String(entry.id)))
+            .map((entry: any) => ({
+              id: entry.id,
+              content: entry.content,
+              tags: entry.tags,
+              source: entry.source,
+              created_at: entry.created_at,
+            }));
+          return { results };
+        }
+        if (
+          s.includes("SELECT id, content, tags, source FROM entries") &&
+          s.includes("WHERE id IN")
+        ) {
+          const ids = new Set(args.map(String));
+          const results = db.entries
+            .filter((entry: any) => ids.has(String(entry.id)))
+            .map((entry: any) => ({
+              id: entry.id,
+              content: entry.content,
+              tags: entry.tags,
+              source: entry.source,
+            }));
+          return { results };
+        }
         // export (cursor + id) and vectorize-pending — avoid matching compress/list queries
         if (
           s.includes("FROM entries") &&
@@ -259,7 +388,11 @@ export class D1Mock {
           const results = rows.map((e: any) => ({ id: e.id, content: e.content, tags: e.tags, source: e.source, created_at: e.created_at }));
           return { results };
         }
-        if (s.includes("SELECT id, content FROM entries") && s.includes("WHERE tags LIKE") && s.includes("ORDER BY created_at DESC")) {
+        if (
+          (s.includes("SELECT id, content FROM entries") || s.includes("SELECT id, content, tags FROM entries")) &&
+          s.includes("WHERE tags LIKE") &&
+          s.includes("ORDER BY created_at DESC")
+        ) {
           // compressTag raw entries query — tag match, system-tag exclusion, and the
           // recall/age/contradiction eligibility predicate (cutoff is the 2nd bind param).
           const tagPattern = args[0] as string;
@@ -274,11 +407,12 @@ export class D1Mock {
               const rc = e.recall_count; // NULL/undefined → recall clause is falsy → protected (matches SQL)
               if (!(rc === 0 || (rc < COMPRESSION_MIN_RECALL && e.created_at < cutoff))) return false;
               if (!(e.contradiction_wins == null || e.contradiction_wins === 0)) return false;
+              if (!(e.contradiction_losses == null || e.contradiction_losses === 0)) return false;
               return true;
             })
             .sort((a: any, b: any) => b.created_at - a.created_at)
             .slice(0, 50)
-            .map((e: any) => ({ id: e.id, content: e.content }));
+            .map((e: any) => ({ id: e.id, content: e.content, tags: e.tags }));
           return { results };
         }
         if (s.includes("SELECT id, content FROM entries WHERE id IN")) {
@@ -300,6 +434,7 @@ export class D1Mock {
             const rc = e.recall_count; // NULL/undefined → recall clause is falsy → protected (matches SQL)
             if (!(rc === 0 || (rc < COMPRESSION_MIN_RECALL && e.created_at < cutoff))) continue;
             if (!(e.contradiction_wins == null || e.contradiction_wins === 0)) continue;
+            if (!(e.contradiction_losses == null || e.contradiction_losses === 0)) continue;
             for (const t of tags) {
               if (SYSTEM.includes(t)) continue;
               if (t.startsWith("status:") || t.startsWith("kind:")) continue;
@@ -383,5 +518,9 @@ export class D1Mock {
 
   async exec(_sql: string) { }
   async batch(stmts: any[]) { return Promise.all(stmts.map((s: any) => s.run())); }
-  reset() { this.entries = []; }
+  reset() {
+    this.entries = [];
+    this.relations = [];
+    this.revisions = [];
+  }
 }

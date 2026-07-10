@@ -207,6 +207,29 @@ describe("derivePattern()", () => {
     expect(tags).toContain("auto-pattern");
   });
 
+  it("stores inferred patterns as draft semantic memories linked to every source", async () => {
+    const rows = makeRows(10);
+    env = makeTestEnv(db, { AI: makePatternAI("You tend to prefer async communication.") });
+    const { ctx } = makeCtx();
+
+    await derivePattern(rows, env, ctx);
+
+    const pattern = db.entries[0];
+    const tags: string[] = JSON.parse(pattern.tags);
+    expect(tags).toContain("status:draft");
+    expect(tags).toContain("kind:semantic");
+    expect(db.relations).toHaveLength(rows.length);
+    for (const source of rows) {
+      expect(db.relations).toContainEqual(
+        expect.objectContaining({
+          from_memory_id: pattern.id,
+          to_memory_id: source.id,
+          relation_type: "derived_from",
+        })
+      );
+    }
+  });
+
   it("stores pattern with source 'system'", async () => {
     env = makeTestEnv(db, { AI: makePatternAI("You tend to prefer async communication.") });
     const { ctx } = makeCtx();

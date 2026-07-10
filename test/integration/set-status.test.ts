@@ -39,6 +39,12 @@ describe("applyStatus()", () => {
     expect(tags).toContain("status:canonical");
     expect(row.vector_ids).toBe(JSON.stringify(["v1"]));
     expect(deleteByIdsMock).not.toHaveBeenCalled();
+    expect(db.revisions).toContainEqual(
+      expect.objectContaining({
+        memory_id: "entry-1",
+        event_type: "STATUS",
+      })
+    );
   });
 
   it("draft: replaces status:canonical with status:draft (only one status tag)", async () => {

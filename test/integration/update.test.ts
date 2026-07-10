@@ -103,6 +103,14 @@ describe("POST /update", () => {
     expect(data.ok).toBe(true);
     expect(data.id).toBe("entry-abc");
     expect(db.entries[0].content).toBe("Updated content");
+    expect(db.revisions).toContainEqual(
+      expect.objectContaining({
+        memory_id: "entry-abc",
+        event_type: "UPDATE",
+        old_content: "Original content",
+        new_content: "Updated content",
+      })
+    );
   });
 
   it("preserves existing tags and source after update", async () => {

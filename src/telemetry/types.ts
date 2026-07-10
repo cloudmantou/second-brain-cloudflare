@@ -104,6 +104,7 @@ export type MemoryEventType =
   | "updated"
   | "appended"
   | "deleted"
+  | "linked"
   | "merged"
   | "replaced"
   | "contradiction_detected"

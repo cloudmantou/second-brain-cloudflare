@@ -46,6 +46,14 @@ describe("deprecateEntry()", () => {
 
     // Vectorize deleteByIds must have been called with the original vector IDs
     expect(deleteByIdsMock).toHaveBeenCalledWith(["v1", "v2"]);
+    expect(db.revisions).toContainEqual(
+      expect.objectContaining({
+        memory_id: "entry-1",
+        event_type: "DEPRECATE",
+        old_content: "Some important work content",
+        new_content: "Some important work content",
+      })
+    );
   });
 
   it("returns false for a missing id", async () => {

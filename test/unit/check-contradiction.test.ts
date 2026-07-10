@@ -146,9 +146,9 @@ describe("checkDuplicateAndContradiction()", () => {
     expect(mergeAction).toEqual({ action: "replace", target_id: "near" });
   });
 
-  it("returns mergeAction=merge with target_id and merged_content for flagged entry", async () => {
+  it("returns mergeAction=merge with a validated target_id without generating rewritten content", async () => {
     const env = makeEnv(
-      '{"action":"merge","target_id":"near","merged_content":"I prefer dark mode in all apps, especially at night"}',
+      '{"action":"merge","target_id":"near"}',
       [match("near", 0.88)],
       [entry("near", "I prefer dark mode")]
     );
@@ -156,7 +156,6 @@ describe("checkDuplicateAndContradiction()", () => {
     expect(mergeAction).toEqual({
       action: "merge",
       target_id: "near",
-      merged_content: "I prefer dark mode in all apps, especially at night",
     });
   });
 
@@ -211,7 +210,7 @@ describe("checkDuplicateAndContradiction()", () => {
 
   it("falls back to keep_both when merge target_id is hallucinated", async () => {
     const env = makeEnv(
-      '{"action":"merge","target_id":"fake-id","merged_content":"combined text"}',
+      '{"action":"merge","target_id":"fake-id"}',
       [match("real-id", 0.88)],
       [entry("real-id", "I prefer dark mode")]
     );
@@ -219,9 +218,9 @@ describe("checkDuplicateAndContradiction()", () => {
     expect(mergeAction).toEqual({ action: "keep_both" });
   });
 
-  it("falls back to keep_both when merge merged_content is empty", async () => {
+  it("falls back to keep_both when merge target_id is missing", async () => {
     const env = makeEnv(
-      '{"action":"merge","target_id":"near","merged_content":"   "}',
+      '{"action":"merge"}',
       [match("near", 0.88)],
       [entry("near", "I prefer dark mode")]
     );

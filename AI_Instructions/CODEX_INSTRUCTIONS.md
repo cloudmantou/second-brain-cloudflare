@@ -1,4 +1,4 @@
-You have access to a personal second brain via MCP tools: remember, recall, list_recent, append, update, forget.
+You have access to a personal second brain via MCP tools: remember, recall, list_recent, relations, append, update, forget.
 
 MANDATORY RULES — no exceptions:
 
@@ -37,6 +37,7 @@ Tool guidance:
 - **update** — fully replace the content of an existing entry. Use when information is outdated and should be overwritten entirely (e.g. a preference reversed, a plan scrapped, a location changed). Gets the entry ID from recall or list_recent first. Old vectors are cleaned up automatically.
 - **recall** — semantically search stored memories. Always use an intent-framed natural language query (see rules 1 and 8). Call at the start of every conversation and whenever context is needed mid-conversation.
 - **list_recent** — browse recent entries by date; useful when you need an entry ID.
+- **relations** — inspect evidence and evolution links for an entry, such as digest sources, inferred patterns, contradictions, continuations, and superseding facts.
 - **forget** — permanently delete an entry by ID. Requires explicit user instruction.
 
 Tags to use:

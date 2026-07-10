@@ -62,6 +62,20 @@ import { hardenOAuthResponse, oauthMethodProbe } from "./oauth/harden";
 import { checkOAuthRedirectOrigin } from "./oauth/redirect-policy";
 import { readPublicUrl, siteConfigJson } from "./config/site";
 import { planRecallRequest, type RecallRequestPlan } from "./query-intent";
+import { ensureMemoryDataModel } from "./memory/schema";
+import {
+  forgetMemoryGraph,
+  type ForgetMemoryResult,
+} from "./memory/forget";
+import {
+  createMemoryRelations,
+  listMemoryRelations,
+  prepareMemoryRelation,
+  type MemoryRelationType,
+} from "./memory/relations";
+import {
+  prepareMemoryRevision,
+} from "./memory/revisions";
 
 export interface Env {
   DB: D1Database;
@@ -139,7 +153,8 @@ export function compressionEligibilitySql(columnPrefix = ""): string {
   const p = columnPrefix;
   return `(${p}importance_score IS NULL OR ${p}importance_score < ${COMPRESSION_IMPORTANCE_THRESHOLD})
       AND (${p}recall_count = 0 OR (${p}recall_count < ${COMPRESSION_MIN_RECALL} AND ${p}created_at < ?))
-      AND (${p}contradiction_wins IS NULL OR ${p}contradiction_wins = 0)`;
+      AND (${p}contradiction_wins IS NULL OR ${p}contradiction_wins = 0)
+      AND (${p}contradiction_losses IS NULL OR ${p}contradiction_losses = 0)`;
 }
 
 // ─── Chunking constants ───────────────────────────────────────────────────────
@@ -151,7 +166,7 @@ const CHUNK_OVERLAP_CHARS = 200;
 
 const CLASSIFY_MAX_TOKENS = 80;
 const CONTRADICTION_MAX_TOKENS = 80;
-const SMART_MERGE_MAX_TOKENS = 250;
+const SMART_MERGE_MAX_TOKENS = 120;
 const INSIGHT_MAX_TOKENS = 300;
 const PATTERN_MAX_TOKENS = 100;
 const DIGEST_MAX_TOKENS = 400;
@@ -407,6 +422,7 @@ export async function initializeDatabase(env: Env): Promise<void> {
   ]) {
     try { await env.DB.exec(alter); } catch { /* column already exists — no-op */ }
   }
+  await ensureMemoryDataModel(env.DB);
   await ensureSettingsTable(env.DB);
   await ensureTelemetryTables(env.DB);
   bindTelemetryDb(env.DB);
@@ -472,7 +488,7 @@ interface ContradictionResult {
 export type MergeAction =
   | { action: "keep_both" }
   | { action: "replace"; target_id: string }
-  | { action: "merge"; target_id: string; merged_content: string };
+  | { action: "merge"; target_id: string };
 
 // Merges duplicate detection, contradiction detection, and smart merge into a
 // single embed + Vectorize query. For flagged entries (0.85–0.95) the combined
@@ -529,11 +545,11 @@ ${existingList}
 Choose exactly one action. Prioritise in this order:
 1. "contradiction" — new memory DIRECTLY CONFLICTS with an existing one (opposite location, reversed decision, changed fact). Include conflicting_id and reason.
 2. "replace" — new memory clearly supersedes an existing one (updated version of the same fact, original is now stale). Include target_id.
-3. "merge" — both memories are complementary and better as one combined entry. Include target_id and merged_content (max 400 chars).
+3. "merge" — the new memory is complementary or continues an existing one. Include target_id. Do not rewrite either memory.
 4. "keep_both" — memories are different enough to coexist, or you are uncertain. This is the safe default.
 
 Respond with JSON only. No text outside the JSON.
-{"action":"keep_both"} OR {"action":"contradiction","conflicting_id":"<id>","reason":"<10 words max>"} OR {"action":"replace","target_id":"<id>"} OR {"action":"merge","target_id":"<id>","merged_content":"<text>"}`;
+{"action":"keep_both"} OR {"action":"contradiction","conflicting_id":"<id>","reason":"<10 words max>"} OR {"action":"replace","target_id":"<id>"} OR {"action":"merge","target_id":"<id>"}`;
 
           try {
             const text = await (await createLLM(env)).chat(
@@ -552,10 +568,10 @@ Respond with JSON only. No text outside the JSON.
               } else if (action === "replace" && parsed.target_id) {
                 const validId = parentIds.find(id => id === parsed.target_id);
                 mergeAction = validId ? { action: "replace", target_id: validId } : { action: "keep_both" };
-              } else if (action === "merge" && parsed.target_id && parsed.merged_content?.trim()) {
+              } else if (action === "merge" && parsed.target_id) {
                 const validId = parentIds.find(id => id === parsed.target_id);
                 mergeAction = validId
-                  ? { action: "merge", target_id: validId, merged_content: parsed.merged_content.trim() }
+                  ? { action: "merge", target_id: validId }
                   : { action: "keep_both" };
               } else {
                 mergeAction = { action: "keep_both" };
@@ -1023,9 +1039,20 @@ async function appendToEntry(
     // Combined content is too large for a single vector — re-chunk everything.
     // Same safe ordering as update/merge/replace: insert new → delete old.
 
-    // Step 1: Persist full combined content to D1
-    await env.DB.prepare(`UPDATE entries SET content = ? WHERE id = ?`)
-      .bind(newContent, id).run();
+    // Step 1: Persist content and its permanent audit record atomically.
+    const appendRevision = prepareMemoryRevision(env.DB, {
+      memoryId: id,
+      eventType: "APPEND",
+      oldContent: existingContent,
+      newContent,
+      oldMetadata: { tags, source },
+      newMetadata: { tags, source },
+      actor: source,
+    });
+    await env.DB.batch([
+      env.DB.prepare(`UPDATE entries SET content = ? WHERE id = ?`).bind(newContent, id),
+      appendRevision.statement,
+    ]);
 
     // Step 2: Re-chunk + re-embed full content (also updates vector_ids in D1)
     let newVectorIds: string[] = [];
@@ -1070,10 +1097,21 @@ async function appendToEntry(
     metadata,
   }]);
 
-  // Single UPDATE for both content and vector_ids — saves one D1 round trip
-  await env.DB.prepare(
-    `UPDATE entries SET content = ?, vector_ids = ? WHERE id = ?`
-  ).bind(newContent, JSON.stringify([...existingVectorIds, newChunkId]), id).run();
+  const appendRevision = prepareMemoryRevision(env.DB, {
+    memoryId: id,
+    eventType: "APPEND",
+    oldContent: existingContent,
+    newContent,
+    oldMetadata: { tags, source },
+    newMetadata: { tags, source },
+    actor: source,
+  });
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE entries SET content = ?, vector_ids = ? WHERE id = ?`
+    ).bind(newContent, JSON.stringify([...existingVectorIds, newChunkId]), id),
+    appendRevision.statement,
+  ]);
 }
 
 // ─── Synthesize insight from retrieved memories ───────────────────────────────
@@ -1160,7 +1198,24 @@ If no genuine pattern exists across 3+ memories, respond with exactly: NONE`;
     const validStarters = ["You tend to", "There's a recurring", "Across your memories"];
     if (!validStarters.some(s => trimmed.startsWith(s))) return;
 
-    await captureEntry(trimmed, ["auto-pattern"], "system", env, ctx);
+    const result = await captureEntry(
+      trimmed,
+      ["auto-pattern", "kind:semantic", "status:draft"],
+      "system",
+      env,
+      ctx
+    );
+    if (result.status === "blocked") return;
+
+    await createMemoryRelations(
+      env.DB,
+      sample.map(row => ({
+        fromMemoryId: result.id,
+        toMemoryId: row.id,
+        relationType: "derived_from",
+        metadata: { automatic: true, derived_type: "pattern" },
+      }))
+    );
   } catch (e) {
     console.error("derivePattern failed (non-fatal):", String(e));
   }
@@ -1226,7 +1281,7 @@ export async function compressTag(
 
   // Fetch compressible entries: tagged with this tag, not system-tagged, not high-importance
   const { results: rawEntries } = await env.DB.prepare(`
-    SELECT id, content FROM entries
+    SELECT id, content, tags FROM entries
     WHERE tags LIKE ?
       AND tags NOT LIKE '%"synthesized"%'
       AND tags NOT LIKE '%"auto-pattern"%'
@@ -1240,26 +1295,54 @@ export async function compressTag(
     return { synthesizedId: null, entriesUsed: 0, text: "" };
   }
 
-  const rows = rawEntries.map(r => ({ id: r.id as string, content: r.content as string }));
+  const rows = rawEntries.map(r => ({
+    id: r.id as string,
+    content: r.content as string,
+    tags: parseStoredTags(r.tags),
+  }));
   const text = await synthesizeDigest(tag, rows, env);
   if (!text) return { synthesizedId: null, entriesUsed: 0, text: "" };
 
   const content = `[Synthesized from ${rows.length} entries tagged "${tag}"]\n\n${text}`;
   const result = await captureEntry(content, ["synthesized", tag], "system", env, ctx);
 
-  if (result.status !== "stored") {
+  if (result.status === "blocked") {
     return { synthesizedId: null, entriesUsed: 0, text };
   }
 
-  for (const id of rows.map(r => r.id)) {
-    try {
-      await env.DB.prepare(
-        `UPDATE entries SET tags = json_insert(tags, '$[#]', 'rolled-up'), content = content || ? WHERE id = ?`
-      ).bind(`\n\n[Digest: ${result.id}]`, id).run();
-    } catch (e) {
-      console.error(`Failed to update source entry ${id} (non-fatal):`, e);
-    }
-  }
+  const digestRelations = rows.map(row =>
+    prepareMemoryRelation(env.DB, {
+      fromMemoryId: result.id,
+      toMemoryId: row.id,
+      relationType: "digest_of",
+      metadata: { automatic: true, derived_type: "digest", tag },
+    })
+  );
+
+  const rollups = rows.map(row => ({
+    row,
+    nextTags: row.tags.includes("rolled-up") ? row.tags : [...row.tags, "rolled-up"],
+  }));
+  const rollupRevisions = rollups.map(({ row, nextTags }) =>
+    prepareMemoryRevision(env.DB, {
+      memoryId: row.id,
+      eventType: "ROLLUP",
+      oldContent: row.content,
+      newContent: row.content,
+      oldMetadata: { tags: row.tags },
+      newMetadata: { tags: nextTags, digestId: result.id },
+      reason: `Included in digest for tag ${tag}`,
+      actor: "system",
+    })
+  );
+  await env.DB.batch([
+    ...digestRelations.map(item => item.statement),
+    ...rollups.map(({ row, nextTags }) =>
+      env.DB.prepare(`UPDATE entries SET tags = ? WHERE id = ?`)
+        .bind(JSON.stringify(nextTags), row.id)
+    ),
+    ...rollupRevisions.map(item => item.statement),
+  ]);
 
   return { synthesizedId: result.id, entriesUsed: rows.length, text };
 }
@@ -1616,10 +1699,73 @@ export type CaptureResult =
   | { status: "blocked"; matchId: string; score: number }
   | { status: "stored"; id: string }
   | { status: "flagged"; id: string; matchId: string; score: number }
-  | { status: "contradiction"; id: string; resolvedConflict: string; reason?: string }
-  | { status: "contradiction_protected"; id: string; canonicalId: string; reason?: string }
-  | { status: "merged"; id: string }
-  | { status: "replaced"; id: string };
+  | { status: "linked"; id: string; linkedId: string; relation: MemoryRelationType; score: number }
+  | { status: "contradiction"; id: string; conflictId: string; reason?: string }
+  | { status: "contradiction_protected"; id: string; canonicalId: string; reason?: string };
+
+interface CaptureRelationPlan {
+  toMemoryId: string;
+  relationType: MemoryRelationType;
+  score: number;
+  metadata: Record<string, unknown>;
+  forceDraft: boolean;
+}
+
+async function planCaptureRelation(
+  duplicate: DuplicateResult,
+  contradiction: ContradictionResult,
+  mergeAction: MergeAction | null,
+  env: Env
+): Promise<CaptureRelationPlan | null> {
+  if (contradiction.detected && contradiction.conflicting_id) {
+    return {
+      toMemoryId: contradiction.conflicting_id,
+      relationType: "contradicts",
+      score: duplicate.status === "flagged" ? duplicate.score : 0.5,
+      metadata: {
+        automatic: true,
+        reason: contradiction.reason ?? null,
+      },
+      forceDraft: false,
+    };
+  }
+  if (duplicate.status !== "flagged") return null;
+
+  const decision = mergeAction?.action ?? "keep_both";
+  const targetId =
+    mergeAction && mergeAction.action !== "keep_both"
+      ? mergeAction.target_id
+      : duplicate.matchId;
+  const target = await env.DB.prepare(
+    `SELECT tags, importance_score FROM entries WHERE id = ?`
+  ).bind(targetId).first() as Record<string, unknown> | null;
+  if (!target) return null;
+
+  const targetTags = parseStoredTags(target.tags);
+  const targetProtected =
+    Number(target.importance_score ?? 0) >= 4 ||
+    getStatus(targetTags) === "canonical";
+  const relationType: MemoryRelationType =
+    decision === "replace" && !targetProtected
+      ? "supersedes"
+      : decision === "merge"
+        ? "continuation_of"
+        : "similar";
+
+  return {
+    toMemoryId: targetId,
+    relationType,
+    score: duplicate.score,
+    metadata: {
+      automatic: true,
+      decision,
+      target_protected: targetProtected,
+      suggested_relation:
+        decision === "replace" && targetProtected ? "supersedes" : null,
+    },
+    forceDraft: decision === "replace" && targetProtected,
+  };
+}
 
 export async function captureEntry(
   rawContent: string,
@@ -1639,61 +1785,46 @@ export async function captureEntry(
     return { status: "blocked", matchId: dup.matchId, score: dup.score };
   }
 
-  // ── Smart merge: replace/merge existing entry — no new entry inserted ────────
-  if (dup.status === "flagged" && mergeAction && mergeAction.action !== "keep_both") {
-    const targetId = mergeAction.target_id;
-    const newContent = mergeAction.action === "merge" ? mergeAction.merged_content : c;
-
-    const targetRow = await env.DB.prepare(
-      `SELECT tags, source, vector_ids, importance_score FROM entries WHERE id = ?`
-    ).bind(targetId).first() as Record<string, any> | null;
-
-    if (targetRow) {
-      const existingTags: string[] = JSON.parse(targetRow.tags ?? "[]");
-      const existingSource = targetRow.source as string;
-      const oldVectorIds: string[] = JSON.parse(targetRow.vector_ids ?? "[]");
-
-      // Protect high-importance or canonical memories from being silently overwritten.
-      // Score ≥ 4 means the existing entry is critical; canonical = confirmed authoritative.
-      const targetStatus = getStatus(existingTags);
-      if ((targetRow.importance_score as number) >= 4 || targetStatus === "canonical") {
-        return { status: "flagged", id: crypto.randomUUID(), matchId: targetId, score: dup.score };
-      }
-
-      // Step 1: Update D1 content
-      await env.DB.prepare(`UPDATE entries SET content = ? WHERE id = ?`).bind(newContent, targetId).run();
-
-      // Step 2: Re-embed new content — inserts new vectors, updates vector_ids in D1
-      let newVectorIds: string[] = [];
-      try {
-        newVectorIds = await storeEntry(env, targetId, newContent, existingTags, existingSource, Date.now());
-      } catch (e) { console.error("Vectorize re-embed failed (non-fatal):", e); }
-
-      // Step 3: Delete only stale vectors — ids reused by the re-embed must survive
-      try {
-        await deleteStaleVectors(env, oldVectorIds, newVectorIds);
-      } catch (e) { console.error("Old vector cleanup failed (non-fatal):", e); }
-
-      // Re-classify the merged/replaced content — updates importance_score + kind (and canonical if warranted) on the target.
-      scheduleClassifyAndTag(targetId, newContent, env, ctx);
-
-      return mergeAction.action === "merge"
-        ? { status: "merged", id: targetId }
-        : { status: "replaced", id: targetId };
-    }
-    // target not found in DB — fall through to normal insert
-  }
+  const relationPlan = await planCaptureRelation(dup, contradiction, mergeAction, env);
 
   const id = crypto.randomUUID();
   const now = Date.now();
   const baseTags = contradiction.detected ? [...t, "contradiction-resolved"] : t;
-  const finalTags = dup.status === "flagged" ? [...baseTags, "duplicate-candidate"] : baseTags;
+  let finalTags = dup.status === "flagged" ? [...baseTags, "duplicate-candidate"] : baseTags;
+  if (relationPlan?.forceDraft) finalTags = withStatus(finalTags, "draft");
 
-  await env.DB.prepare(
+  const insertStatement = env.DB.prepare(
     `INSERT INTO entries (id, content, tags, source, created_at, vector_ids) VALUES (?, ?, ?, ?, ?, ?)`
-  ).bind(id, c, JSON.stringify(finalTags), source, now, "[]").run();
+  ).bind(id, c, JSON.stringify(finalTags), source, now, "[]");
+  const revision = prepareMemoryRevision(env.DB, {
+    memoryId: id,
+    eventType: "ADD",
+    newContent: c,
+    newMetadata: { tags: finalTags, source },
+    actor: source,
+    createdAt: now,
+  });
+  const statements = [insertStatement, revision.statement];
+  if (relationPlan) {
+    statements.push(prepareMemoryRelation(env.DB, {
+      fromMemoryId: id,
+      toMemoryId: relationPlan.toMemoryId,
+      relationType: relationPlan.relationType,
+      score: relationPlan.score,
+      metadata: relationPlan.metadata,
+      createdAt: now,
+    }).statement);
+  }
+  await env.DB.batch(statements);
 
   logMemoryEvent(id, "created", { source, tags: finalTags }, source);
+  if (relationPlan) {
+    logMemoryEvent(id, "linked", {
+      to_memory_id: relationPlan.toMemoryId,
+      relation_type: relationPlan.relationType,
+      score: relationPlan.score,
+    }, source);
+  }
 
   ctx.waitUntil(
     storeEntry(env, id, c, finalTags, source, now)
@@ -1715,8 +1846,22 @@ export async function captureEntry(
       // Strip "contradiction-resolved" — that tag marks entries that WON a contradiction;
       // this entry lost, so it must not carry that tag.
       const draftTags = finalTags.filter(t => t !== "contradiction-resolved");
-      await env.DB.prepare(`UPDATE entries SET tags = ? WHERE id = ?`)
-        .bind(JSON.stringify(withStatus(draftTags, "draft")), id).run();
+      const nextTags = withStatus(draftTags, "draft");
+      const statusRevision = prepareMemoryRevision(env.DB, {
+        memoryId: id,
+        eventType: "STATUS",
+        oldContent: c,
+        newContent: c,
+        oldMetadata: { tags: finalTags, source },
+        newMetadata: { tags: nextTags, source },
+        reason: `Conflicts with canonical memory ${conflictId}`,
+        actor: "system",
+      });
+      await env.DB.batch([
+        env.DB.prepare(`UPDATE entries SET tags = ? WHERE id = ?`)
+          .bind(JSON.stringify(nextTags), id),
+        statusRevision.statement,
+      ]);
       // Record the outcome: canonical incumbent survived (win), new draft lost (loss).
       // Non-fatal — a failed count update must not abort capture.
       try {
@@ -1728,20 +1873,25 @@ export async function captureEntry(
       return { status: "contradiction_protected", id, canonicalId: conflictId, reason: contradiction.reason };
     }
 
-    // Non-canonical loser: the new entry wins; the incumbent loses and is deprecated
-    // (row kept for audit). Record the outcome before deprecating. Non-fatal.
+    // Preserve both facts. The relation and counters express the conflict without
+    // rewriting or hiding the older observation.
     try {
       await env.DB.prepare(`UPDATE entries SET contradiction_wins = contradiction_wins + 1 WHERE id = ?`).bind(id).run();
       await env.DB.prepare(`UPDATE entries SET contradiction_losses = contradiction_losses + 1 WHERE id = ?`).bind(conflictId).run();
     } catch (e) {
       console.error("Contradiction count update failed (non-fatal):", e);
     }
-    try {
-      await deprecateEntry(conflictId, env);
-    } catch (e) {
-      console.error("Contradiction deprecation failed (non-fatal):", e);
-    }
-    return { status: "contradiction", id, resolvedConflict: conflictId, reason: contradiction.reason };
+    return { status: "contradiction", id, conflictId, reason: contradiction.reason };
+  }
+
+  if (relationPlan) {
+    return {
+      status: "linked",
+      id,
+      linkedId: relationPlan.toMemoryId,
+      relation: relationPlan.relationType,
+      score: relationPlan.score,
+    };
   }
 
   if (dup.status === "flagged") {
@@ -1755,46 +1905,44 @@ export async function captureEntry(
 // Used by both the `forget` MCP tool and POST /forget so the cleanup logic
 // (D1 row + tracked Vectorize IDs) lives in exactly one place.
 
-export type ForgetResult =
-  | { status: "not_found" }
-  | { status: "deleted"; vectorCount: number };
+export type ForgetResult = ForgetMemoryResult;
 
 export async function forgetEntry(id: string, env: Env): Promise<ForgetResult> {
-  const row = await env.DB.prepare(
-    `SELECT vector_ids FROM entries WHERE id = ?`
-  ).bind(id).first() as Record<string, any> | null;
-
-  if (!row) return { status: "not_found" };
-
-  const vectorIds: string[] = JSON.parse(row.vector_ids ?? "[]");
-
-  await env.DB.prepare(`DELETE FROM entries WHERE id = ?`).bind(id).run();
-
-  try {
-    if (vectorIds.length) {
-      // Delete exact IDs — no guessing, no leaks
-      await env.VECTORIZE.deleteByIds(vectorIds);
-    }
-  } catch (e) {
-    console.error("Vectorize delete failed (non-fatal):", e);
-  }
-
-  return { status: "deleted", vectorCount: vectorIds.length };
+  return forgetMemoryGraph(id, env.DB, env.VECTORIZE);
 }
 
 // Deprecate (issue #119): keep the D1 row for audit but make the entry
 // unrecallable by deleting its vectors and tagging it status:deprecated.
-export async function deprecateEntry(id: string, env: Env): Promise<boolean> {
+export async function deprecateEntry(
+  id: string,
+  env: Env,
+  reason = "Memory explicitly deprecated",
+  actor = "system"
+): Promise<boolean> {
   const row = await env.DB.prepare(
-    `SELECT tags, vector_ids FROM entries WHERE id = ?`
+    `SELECT content, tags, source, vector_ids FROM entries WHERE id = ?`
   ).bind(id).first() as Record<string, any> | null;
   if (!row) return false;
 
   const tags: string[] = JSON.parse(row.tags ?? "[]");
+  const nextTags = withStatus(tags, "deprecated");
   const vectorIds: string[] = JSON.parse(row.vector_ids ?? "[]");
 
-  await env.DB.prepare(`UPDATE entries SET tags = ?, vector_ids = ? WHERE id = ?`)
-    .bind(JSON.stringify(withStatus(tags, "deprecated")), "[]", id).run();
+  const deprecateRevision = prepareMemoryRevision(env.DB, {
+    memoryId: id,
+    eventType: "DEPRECATE",
+    oldContent: row.content as string,
+    newContent: row.content as string,
+    oldMetadata: { tags, source: row.source, vectorIds },
+    newMetadata: { tags: nextTags, source: row.source, vectorIds: [] },
+    reason,
+    actor,
+  });
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE entries SET tags = ?, vector_ids = ? WHERE id = ?`)
+      .bind(JSON.stringify(nextTags), "[]", id),
+    deprecateRevision.statement,
+  ]);
 
   try {
     if (vectorIds.length) await env.VECTORIZE.deleteByIds(vectorIds);
@@ -1807,11 +1955,29 @@ export async function deprecateEntry(id: string, env: Env): Promise<boolean> {
 // Apply a lifecycle status to an entry (issue #119). 'deprecated' deletes vectors
 // (via deprecateEntry); others swap the status:* tag in place. Returns ok=false if no such entry.
 export async function applyStatus(id: string, status: MemoryStatus, env: Env): Promise<boolean> {
-  if (status === "deprecated") return deprecateEntry(id, env);
-  const row = await env.DB.prepare(`SELECT tags FROM entries WHERE id = ?`).bind(id).first() as Record<string, any> | null;
+  if (status === "deprecated") {
+    return deprecateEntry(id, env, "Status set to deprecated", "system");
+  }
+  const row = await env.DB.prepare(
+    `SELECT content, tags, source FROM entries WHERE id = ?`
+  ).bind(id).first() as Record<string, any> | null;
   if (!row) return false;
   const tags: string[] = JSON.parse(row.tags ?? "[]");
-  await env.DB.prepare(`UPDATE entries SET tags = ? WHERE id = ?`).bind(JSON.stringify(withStatus(tags, status)), id).run();
+  const nextTags = withStatus(tags, status);
+  const statusRevision = prepareMemoryRevision(env.DB, {
+    memoryId: id,
+    eventType: "STATUS",
+    oldContent: row.content as string,
+    newContent: row.content as string,
+    oldMetadata: { tags, source: row.source },
+    newMetadata: { tags: nextTags, source: row.source },
+    reason: `Status set to ${status}`,
+    actor: "system",
+  });
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE entries SET tags = ? WHERE id = ?`).bind(JSON.stringify(nextTags), id),
+    statusRevision.statement,
+  ]);
   return true;
 }
 
@@ -1837,16 +2003,13 @@ function buildMcpServer(env: Env, ctx: ExecutionContext): McpServer {
         return { content: [{ type: "text", text: `Duplicate detected (${(result.score * 100).toFixed(0)}% match) — not stored. Existing entry ID: ${result.matchId}` }] };
       }
       if (result.status === "contradiction") {
-        return { content: [{ type: "text", text: `Stored. ID: ${result.id} — resolved contradiction with entry ${result.resolvedConflict}${result.reason ? `: ${result.reason}` : ""}.` }] };
+        return { content: [{ type: "text", text: `Stored as a new memory. ID: ${result.id} — linked as contradicting entry ${result.conflictId}; both original observations were preserved${result.reason ? `: ${result.reason}` : ""}.` }] };
       }
       if (result.status === "contradiction_protected") {
-        return { content: [{ type: "text", text: `Stored as draft (ID: ${result.id}) — conflicts with a canonical memory (${result.canonicalId}), which was kept${result.reason ? `: ${result.reason}` : ""}.` }] };
+        return { content: [{ type: "text", text: `Stored as draft (ID: ${result.id}) — linked as contradicting canonical memory ${result.canonicalId}; both observations were preserved${result.reason ? `: ${result.reason}` : ""}.` }] };
       }
-      if (result.status === "replaced") {
-        return { content: [{ type: "text", text: `Memory updated — new content replaced outdated entry (ID: ${result.id}).` }] };
-      }
-      if (result.status === "merged") {
-        return { content: [{ type: "text", text: `Memories merged — combined into existing entry (ID: ${result.id}).` }] };
+      if (result.status === "linked") {
+        return { content: [{ type: "text", text: `Stored as a new memory (ID: ${result.id}) and linked to ${result.linkedId} with relation ${result.relation}. The existing memory was preserved.` }] };
       }
       if (result.status === "flagged") {
         return { content: [{ type: "text", text: `Stored with ID: ${result.id} — note: similar entry exists (${(result.score * 100).toFixed(0)}% match, ID: ${result.matchId}). Tagged as duplicate-candidate.` }] };
@@ -1892,7 +2055,8 @@ function buildMcpServer(env: Env, ctx: ExecutionContext): McpServer {
       } catch (e) {
         console.error("Append failed:", e);
         return {
-          content: [{ type: "text", text: `Append failed: ${(e as Error).message}` }],
+          content: [{ type: "text", text: "Append failed. No complete update was recorded; retry later." }],
+          isError: true,
         };
       }
 
@@ -1923,20 +2087,35 @@ function buildMcpServer(env: Env, ctx: ExecutionContext): McpServer {
 
       // Read current row upfront — need tags, source, AND old vector_ids before any mutation
       const row = await env.DB.prepare(
-        `SELECT tags, source, vector_ids FROM entries WHERE id = ?`
+        `SELECT content, tags, source, vector_ids FROM entries WHERE id = ?`
       ).bind(id).first() as Record<string, any> | null;
 
       if (!row) {
         return { content: [{ type: "text", text: `No entry found with ID: ${id}` }] };
       }
 
-      const tags: string[] = JSON.parse(row.tags ?? "[]").filter((t: string) => t !== "rolled-up");
+      const oldContent = row.content as string;
+      const oldTags: string[] = JSON.parse(row.tags ?? "[]");
+      const tags = oldTags.filter((t: string) => t !== "rolled-up");
       const source = row.source as string;
       const oldVectorIds: string[] = JSON.parse(row.vector_ids ?? "[]");
 
-      // Step 1: Update D1 content and tags (strip rolled-up so updated entry ranks normally)
-      await env.DB.prepare(`UPDATE entries SET content = ?, tags = ? WHERE id = ?`)
-        .bind(newContent, JSON.stringify(tags), id).run();
+      // Step 1: Update the fact and its permanent audit record atomically.
+      const updateRevision = prepareMemoryRevision(env.DB, {
+        memoryId: id,
+        eventType: "UPDATE",
+        oldContent,
+        newContent,
+        oldMetadata: { tags: oldTags, source },
+        newMetadata: { tags, source },
+        reason: "Full content replaced through MCP",
+        actor: "mcp",
+      });
+      await env.DB.batch([
+        env.DB.prepare(`UPDATE entries SET content = ?, tags = ? WHERE id = ?`)
+          .bind(newContent, JSON.stringify(tags), id),
+        updateRevision.statement,
+      ]);
 
       // Step 2: Re-embed new content → inserts new vectors + updates vector_ids in D1
       let newVectorIds: string[] = [];
@@ -2045,6 +2224,30 @@ function buildMcpServer(env: Env, ctx: ExecutionContext): McpServer {
 
   // ── forget ───────────────────────────────────────────────────────────────
   server.registerTool(
+    "relations",
+    {
+      description: "Inspect incoming and outgoing evidence links for a memory, including digests, patterns, contradictions, continuations, and superseding facts.",
+      inputSchema: {
+        id: z.string().min(1).describe("Memory ID from recall or list_recent"),
+        limit: z.number().int().min(1).max(100).default(50).describe("Maximum relations to return"),
+      },
+    },
+    async ({ id, limit }) => {
+      const relations = await listMemoryRelations(env.DB, id, limit);
+      if (!relations.length) {
+        return { content: [{ type: "text", text: `No relations found for entry ${id}.` }] };
+      }
+      const text = relations.map((relation, index) => {
+        const endpoint = relation.direction === "outgoing" ? "to" : "from";
+        const score = relation.score == null ? "" : ` · score ${(relation.score * 100).toFixed(0)}%`;
+        const content = relation.other.content ? `\n${relation.other.content}` : "";
+        return `${index + 1}. ${relation.direction} ${relation.relation} ${endpoint} ${relation.other.id}${score}${content}`;
+      }).join("\n\n");
+      return { content: [{ type: "text", text }] };
+    }
+  );
+
+  server.registerTool(
     "forget",
     {
       description: "Permanently delete an entry from your second brain by ID. Only call when the user explicitly asks to delete something. Confirm the entry ID using recall or list_recent first. This action cannot be undone.",
@@ -2057,7 +2260,23 @@ function buildMcpServer(env: Env, ctx: ExecutionContext): McpServer {
       if (result.status === "not_found") {
         return { content: [{ type: "text", text: `No entry found with ID: ${id}` }] };
       }
-      return { content: [{ type: "text", text: `Deleted entry ${id} and ${result.vectorCount} vector(s)` }] };
+      if (result.status === "delete_failed") {
+        return {
+          content: [{
+            type: "text",
+            text: `Deletion of entry ${id} was not completed. Database tracking was preserved; retry later.`,
+          }],
+          isError: true,
+        };
+      }
+      logMemoryEvent(id, "deleted", {
+        vector_count: result.vectorCount,
+        derived_count: result.derivedCount,
+      }, "forget");
+      return { content: [{
+        type: "text",
+        text: `Deleted entry ${id}, ${result.derivedCount} derived memory/memories, and ${result.vectorCount} vector(s).`,
+      }] };
     }
   );
 
@@ -2323,16 +2542,37 @@ const defaultHandler = {
         });
       }
       if (result.status === "contradiction") {
-        return json({ ok: true, id: result.id, resolved_conflict: result.resolvedConflict, reason: result.reason });
+        return json({
+          ok: true,
+          id: result.id,
+          conflict_id: result.conflictId,
+          relation: "contradicts",
+          preserved: true,
+          reason: result.reason,
+        });
       }
       if (result.status === "contradiction_protected") {
-        return json({ ok: true, id: result.id, status: "draft", kept_canonical: result.canonicalId, reason: result.reason });
+        return json({
+          ok: true,
+          id: result.id,
+          status: "draft",
+          kept_canonical: result.canonicalId,
+          relation: "contradicts",
+          preserved: true,
+          reason: result.reason,
+        });
       }
-      if (result.status === "replaced") {
-        return json({ ok: true, id: result.id, action: "replaced", message: "New memory replaced an outdated existing entry" });
-      }
-      if (result.status === "merged") {
-        return json({ ok: true, id: result.id, action: "merged", message: "Memories merged into a single combined entry" });
+      if (result.status === "linked") {
+        return json({
+          ok: true,
+          id: result.id,
+          action: "linked",
+          relation: result.relation,
+          linked_id: result.linkedId,
+          score: parseFloat((result.score * 100).toFixed(1)),
+          preserved: true,
+          message: "Stored as a new memory and linked without rewriting the existing memory",
+        });
       }
       if (result.status === "flagged") {
         return json({
@@ -2375,7 +2615,8 @@ const defaultHandler = {
       try {
         await appendToEntry(env, id, existingContent, addition, tags, source);
       } catch (e) {
-        return json({ ok: false, error: `Append failed: ${(e as Error).message}` }, 500);
+        console.error("Append failed:", e);
+        return json({ ok: false, error: "Append failed. Retry later." }, 500);
       }
 
       return json({
@@ -2399,11 +2640,12 @@ const defaultHandler = {
       const newContent = body.content.trim();
 
       const row = await env.DB.prepare(
-        `SELECT tags, source, vector_ids FROM entries WHERE id = ?`
+        `SELECT content, tags, source, vector_ids FROM entries WHERE id = ?`
       ).bind(id).first() as Record<string, any> | null;
 
       if (!row) return json({ ok: false, error: `No entry found with ID: ${id}` }, 404);
 
+      const oldContent = row.content as string;
       const tags: string[] = JSON.parse(row.tags ?? "[]");
       const { cleanContent, hashtags: newHashtags } = extractHashtags(newContent);
       const mergedTags = [...new Set([...tags, ...newHashtags])];
@@ -2411,8 +2653,21 @@ const defaultHandler = {
       const oldVectorIds: string[] = JSON.parse(row.vector_ids ?? "[]");
       const finalContent = cleanContent || newContent;
 
-      await env.DB.prepare(`UPDATE entries SET content = ?, tags = ? WHERE id = ?`)
-        .bind(finalContent, JSON.stringify(mergedTags), id).run();
+      const updateRevision = prepareMemoryRevision(env.DB, {
+        memoryId: id,
+        eventType: "UPDATE",
+        oldContent,
+        newContent: finalContent,
+        oldMetadata: { tags, source },
+        newMetadata: { tags: mergedTags, source },
+        reason: "Full content replaced through HTTP API",
+        actor: "api",
+      });
+      await env.DB.batch([
+        env.DB.prepare(`UPDATE entries SET content = ?, tags = ? WHERE id = ?`)
+          .bind(finalContent, JSON.stringify(mergedTags), id),
+        updateRevision.statement,
+      ]);
 
       let newVectorIds: string[] = [];
       try {
@@ -2649,6 +2904,20 @@ const defaultHandler = {
       });
     }
 
+    // GET /relations — inspect evidence and evolution links for one memory
+    if (url.pathname === "/relations" && request.method === "GET") {
+      const authErr = requireAuth(request, env);
+      if (authErr) return authErr;
+      const id = url.searchParams.get("id")?.trim();
+      if (!id) return json({ ok: false, error: "id is required" }, 400);
+      const requestedLimit = Number.parseInt(url.searchParams.get("limit") ?? "50", 10);
+      const limit = Number.isFinite(requestedLimit)
+        ? Math.max(1, Math.min(requestedLimit, 100))
+        : 50;
+      const relations = await listMemoryRelations(env.DB, id, limit);
+      return json({ ok: true, id, relations });
+    }
+
     // POST /forget — delete-by-id, mirrors the MCP `forget` tool
     if (url.pathname === "/forget" && request.method === "POST") {
       const authErr = requireAuth(request, env);
@@ -2664,8 +2933,23 @@ const defaultHandler = {
       if (result.status === "not_found") {
         return json({ ok: false, error: `No entry found with ID: ${id}` }, 404);
       }
+      if (result.status === "delete_failed") {
+        return json({
+          ok: false,
+          error: "Memory deletion was not completed. Database tracking was preserved; retry later.",
+        }, 503);
+      }
 
-      return json({ ok: true, id, deletedVectors: result.vectorCount });
+      logMemoryEvent(id, "deleted", {
+        vector_count: result.vectorCount,
+        derived_count: result.derivedCount,
+      }, "forget");
+      return json({
+        ok: true,
+        id,
+        deletedVectors: result.vectorCount,
+        deletedDerived: result.derivedCount,
+      });
     }
 
     // POST /status — set lifecycle status, mirrors the MCP `set_status` tool

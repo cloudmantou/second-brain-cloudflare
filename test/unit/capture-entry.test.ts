@@ -145,7 +145,7 @@ describe("captureEntry()", () => {
 
   // ── Contradiction ───────────────────────────────────────────────────────────
 
-  it("returns status=contradiction, stores new entry, and DEPRECATES (not deletes) the conflicting entry", async () => {
+  it("returns status=contradiction, stores a new entry, and preserves the conflicting entry", async () => {
     db.entries.push({
       id: "old-entry",
       content: "I live in NYC",
@@ -173,22 +173,27 @@ describe("captureEntry()", () => {
 
     expect(result.status).toBe("contradiction");
     if (result.status !== "contradiction") return;
-    expect(result.resolvedConflict).toBe("old-entry");
+    expect(result.conflictId).toBe("old-entry");
     expect(result.reason).toBe("different city");
     expect(typeof result.id).toBe("string");
 
     // New entry stored
     expect(db.entries.some(e => e.id === result.id)).toBe(true);
-    // Conflicting entry row STILL EXISTS (deprecated, not deleted)
+    // Conflicting entry remains unchanged and linked for audit.
     const conflictRow = db.entries.find(e => e.id === "old-entry");
     expect(conflictRow).toBeDefined();
     const conflictTags: string[] = JSON.parse(conflictRow!.tags);
-    expect(conflictTags).toContain("status:deprecated");
-    // Vectors cleared from D1 row
-    expect(conflictRow!.vector_ids).toBe("[]");
-    // Vectorize deleteByIds called with old vector ids
-    expect(deleteByIdsMock).toHaveBeenCalledWith(["old-vec-1", "old-vec-2"]);
-    // New entry won the contradiction; deprecated incumbent recorded the loss.
+    expect(conflictTags).not.toContain("status:deprecated");
+    expect(conflictRow!.vector_ids).toBe('["old-vec-1","old-vec-2"]');
+    expect(deleteByIdsMock).not.toHaveBeenCalled();
+    expect(db.relations).toContainEqual(
+      expect.objectContaining({
+        from_memory_id: result.id,
+        to_memory_id: "old-entry",
+        relation_type: "contradicts",
+      })
+    );
+    // The scoring metadata still promotes the newer observation.
     expect(db.entries.find(e => e.id === result.id)!.contradiction_wins).toBe(1);
     expect(conflictRow!.contradiction_losses).toBe(1);
   });
@@ -275,7 +280,7 @@ describe("captureEntry()", () => {
 
   // ── Smart merge: replace ────────────────────────────────────────────────────
 
-  it("replace: updates existing entry content, does NOT insert a new entry", async () => {
+  it("replace: stores a new entry and links it without rewriting the existing entry", async () => {
     db.entries.push({
       id: "existing", content: "I use VSCode", tags: '["work"]', source: "api",
       created_at: Date.now(), vector_ids: '["existing"]', recall_count: 0, importance_score: 3,
@@ -290,15 +295,16 @@ describe("captureEntry()", () => {
     });
     const { ctx } = makeCtx();
     const result = await captureEntry("I switched to Cursor", [], "api", env, ctx);
-    expect(result.status).toBe("replaced");
-    if (result.status !== "replaced") return;
-    expect(result.id).toBe("existing");
-    // No new entry — only the existing one remains
-    expect(db.entries).toHaveLength(1);
-    expect(db.entries[0].content).toBe("I switched to Cursor");
+    expect(result.status).toBe("linked");
+    if (result.status !== "linked") return;
+    expect(result.linkedId).toBe("existing");
+    expect(result.relation).toBe("supersedes");
+    expect(db.entries).toHaveLength(2);
+    expect(db.entries.find(entry => entry.id === "existing")!.content).toBe("I use VSCode");
+    expect(db.entries.find(entry => entry.id === result.id)!.content).toBe("I switched to Cursor");
   });
 
-  it("replace: deletes old vectors after re-embedding", async () => {
+  it("replace: never deletes vectors belonging to the existing entry", async () => {
     db.entries.push({
       id: "existing", content: "I use VSCode", tags: "[]", source: "api",
       created_at: Date.now(), vector_ids: '["existing","existing-chunk-1"]', recall_count: 0, importance_score: 0,
@@ -315,8 +321,7 @@ describe("captureEntry()", () => {
     });
     const { ctx } = makeCtx();
     await captureEntry("I switched to Cursor", [], "api", env, ctx);
-    // Only the stale chunk is deleted; the reused "existing" vector survives.
-    expect(deleteByIdsMock).toHaveBeenCalledWith(["existing-chunk-1"]);
+    expect(deleteByIdsMock).not.toHaveBeenCalled();
   });
 
   it("replace: falls through to normal insert when target not found in DB", async () => {
@@ -338,7 +343,7 @@ describe("captureEntry()", () => {
 
   // ── Smart merge: merge ──────────────────────────────────────────────────────
 
-  it("merge: updates existing entry with merged_content, does NOT insert a new entry", async () => {
+  it("merge: stores raw new content and links it as a continuation", async () => {
     db.entries.push({
       id: "existing", content: "I prefer dark mode", tags: '["personal"]', source: "api",
       created_at: Date.now(), vector_ids: '["existing"]', recall_count: 0, importance_score: 2,
@@ -353,14 +358,16 @@ describe("captureEntry()", () => {
     });
     const { ctx } = makeCtx();
     const result = await captureEntry("I like dark mode especially at night", [], "api", env, ctx);
-    expect(result.status).toBe("merged");
-    if (result.status !== "merged") return;
-    expect(result.id).toBe("existing");
-    expect(db.entries).toHaveLength(1);
-    expect(db.entries[0].content).toBe("I prefer dark mode in all apps, especially at night");
+    expect(result.status).toBe("linked");
+    if (result.status !== "linked") return;
+    expect(result.linkedId).toBe("existing");
+    expect(result.relation).toBe("continuation_of");
+    expect(db.entries).toHaveLength(2);
+    expect(db.entries.find(entry => entry.id === "existing")!.content).toBe("I prefer dark mode");
+    expect(db.entries.find(entry => entry.id === result.id)!.content).toBe("I like dark mode especially at night");
   });
 
-  it("merge: uses merged_content (not new content) for re-embedding", async () => {
+  it("merge: embeds the raw new content, not the model-generated rewrite", async () => {
     db.entries.push({
       id: "existing", content: "I prefer dark mode", tags: "[]", source: "api",
       created_at: Date.now(), vector_ids: '["existing"]', recall_count: 0, importance_score: 0,
@@ -375,14 +382,14 @@ describe("captureEntry()", () => {
       }),
       AI: makeContradictionAI('{"action":"merge","target_id":"existing","merged_content":"Combined merged memory"}'),
     });
-    const { ctx } = makeCtx();
+    const { ctx, drain } = makeCtx();
     await captureEntry("I like dark mode at night", [], "api", env, ctx);
-    // The inserted vector metadata should contain the merged content
+    await drain();
     const insertedVectors = insertMock.mock.calls[0][0] as any[];
-    expect(insertedVectors[0].metadata.content).toBe("Combined merged memory");
+    expect(insertedVectors[0].metadata.content).toBe("I like dark mode at night");
   });
 
-  it("merge: deletes old vectors after re-embedding", async () => {
+  it("merge: never deletes vectors belonging to the existing entry", async () => {
     db.entries.push({
       id: "existing", content: "I prefer dark mode", tags: "[]", source: "api",
       created_at: Date.now(), vector_ids: '["existing","existing-chunk-1"]', recall_count: 0, importance_score: 0,
@@ -399,13 +406,12 @@ describe("captureEntry()", () => {
     });
     const { ctx } = makeCtx();
     await captureEntry("I like dark mode at night", [], "api", env, ctx);
-    // Only the stale chunk is deleted; the reused "existing" vector survives.
-    expect(deleteByIdsMock).toHaveBeenCalledWith(["existing-chunk-1"]);
+    expect(deleteByIdsMock).not.toHaveBeenCalled();
   });
 
-  // ── Smart merge: keep_both falls back to flagged (existing behaviour) ────────
+  // ── Smart merge: keep_both becomes an explicit similarity link ──────────────
 
-  it("keep_both: stores new entry with duplicate-candidate tag (unchanged behaviour)", async () => {
+  it("keep_both: stores new entry with duplicate-candidate tag and similar relation", async () => {
     db.entries.push({
       id: "near", content: "I prefer dark mode", tags: "[]", source: "api",
       created_at: Date.now(), vector_ids: "[]", recall_count: 0, importance_score: 0,
@@ -420,7 +426,10 @@ describe("captureEntry()", () => {
     });
     const { ctx } = makeCtx();
     const result = await captureEntry("I like dark themes", [], "api", env, ctx);
-    expect(result.status).toBe("flagged");
+    expect(result.status).toBe("linked");
+    if (result.status !== "linked") return;
+    expect(result.relation).toBe("similar");
+    expect(result.linkedId).toBe("near");
     expect(db.entries).toHaveLength(2);
     const tags: string[] = JSON.parse(db.entries[1].tags);
     expect(tags).toContain("duplicate-candidate");
