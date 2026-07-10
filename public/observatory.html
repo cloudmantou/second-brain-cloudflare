@@ -545,8 +545,15 @@
           renderCharts(timeseries.points || [])
           renderOps(data.top_operations || [])
           await loadLogs()
+          const q = data.telemetry_queue
+          const queueStatus = q
+            ? " · 遥测队列 " + (q.queueLength ?? 0) +
+              " · 已丢弃 " + (q.droppedEvents ?? 0) +
+              " · 最近 Flush " + (q.lastFlushDurationMs == null ? "—" : fmtMs(q.lastFlushDurationMs)) +
+              " · 最近错误 " + (q.lastFlushError || "无")
+            : ""
           document.getElementById("status-line").textContent =
-            "窗口 " + hours + "h · 更新于 " + new Date().toLocaleTimeString("zh-CN")
+            "窗口 " + hours + "h · 更新于 " + new Date().toLocaleTimeString("zh-CN") + queueStatus
         } catch (e) {
           document.getElementById("status-line").textContent = "加载失败: " + e.message
         }

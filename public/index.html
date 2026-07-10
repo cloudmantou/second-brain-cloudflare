@@ -1843,7 +1843,8 @@
       }
 
       /* ============ MODELS CONTROL PLANE (provider cards) ============ */
-      #models-sheet {
+      #models-sheet,
+      #oauth-clients-sheet {
         position: fixed;
         inset: 0;
         z-index: 90;
@@ -1857,7 +1858,8 @@
         transition: opacity 0.22s var(--ease);
       }
 
-      #models-sheet.open {
+      #models-sheet.open,
+      #oauth-clients-sheet.open {
         opacity: 1;
         pointer-events: auto;
       }
@@ -1874,7 +1876,8 @@
         transition: transform 0.28s var(--ease);
       }
 
-      #models-sheet.open .models-inner {
+      #models-sheet.open .models-inner,
+      #oauth-clients-sheet.open .models-inner {
         transform: none;
       }
 
@@ -1890,6 +1893,46 @@
         color: var(--text-secondary);
         margin-bottom: 12px;
         line-height: 1.45;
+      }
+
+      .oauth-client-list {
+        display: grid;
+        gap: 10px;
+        margin: 14px 0;
+      }
+
+      .oauth-client-card {
+        border: 0.5px solid var(--border-input);
+        border-radius: 14px;
+        padding: 13px;
+        background: var(--surface-2);
+      }
+
+      .oauth-client-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 8px;
+      }
+
+      .oauth-client-name { font-weight: 600; font-size: 14px; }
+      .oauth-client-meta {
+        color: var(--text-secondary);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        line-height: 1.55;
+        overflow-wrap: anywhere;
+      }
+
+      .oauth-client-delete {
+        border: 0;
+        border-radius: 9px;
+        padding: 7px 9px;
+        background: rgba(181, 72, 62, 0.1);
+        color: var(--danger);
+        cursor: pointer;
+        white-space: nowrap;
       }
 
       .models-tabs {
@@ -3315,6 +3358,9 @@
         <button class="menu-item" onclick="openModelsSettings()">
           <i class="ti ti-cpu"></i> <span data-i18n="menu.models">模型与 API</span>
         </button>
+        <button class="menu-item" onclick="openOAuthClients()">
+          <i class="ti ti-key"></i> <span data-i18n="menu.oauthClients">OAuth 客户端</span>
+        </button>
         <button class="menu-item" onclick="closeMenu(); switchTab('observatory')">
           <i class="ti ti-chart-histogram"></i> <span data-i18n="menu.observatory">观测台</span>
         </button>
@@ -3436,6 +3482,21 @@
           <button type="button" class="models-btn" onclick="closeModelsSettings()" data-i18n="models.close">关闭</button>
         </div>
         <div class="models-msg" id="models-msg"></div>
+      </div>
+    </div>
+
+    <div id="oauth-clients-sheet" onclick="if(event.target===this)closeOAuthClients()">
+      <div class="models-inner" onclick="event.stopPropagation()">
+        <h3 data-i18n="oauthClients.title">OAuth 客户端</h3>
+        <p class="models-sub" data-i18n="oauthClients.sub">
+          这里列出已注册到个人 Second Brain 的 MCP 客户端。删除客户端会同时撤销它的所有授权。
+        </p>
+        <div class="oauth-client-list" id="oauth-client-list"></div>
+        <div class="models-msg" id="oauth-clients-msg"></div>
+        <div class="models-actions" style="margin-top: 18px">
+          <button type="button" class="models-btn" onclick="loadOAuthClients()" data-i18n="oauthClients.refresh">刷新</button>
+          <button type="button" class="models-btn" onclick="closeOAuthClients()" data-i18n="models.close">关闭</button>
+        </div>
       </div>
     </div>
 
@@ -3697,10 +3758,19 @@
           obsRenderOps(data.top_operations || [])
           await obsLoadLogs()
           if (status) {
-            status.textContent = t('obs.updated', {
+            const updated = t('obs.updated', {
               hours,
               time: new Date().toLocaleTimeString(getLang() === 'zh' ? 'zh-CN' : 'en-US'),
             })
+            const q = data.telemetry_queue
+            status.textContent = q
+              ? updated + ' · ' + t('obs.queueStatus', {
+                  queued: q.queueLength ?? 0,
+                  dropped: q.droppedEvents ?? 0,
+                  duration: q.lastFlushDurationMs == null ? '—' : obsFmtMs(q.lastFlushDurationMs),
+                  error: q.lastFlushError || t('obs.none'),
+                })
+              : updated
           }
         } catch (e) {
           if (status) status.textContent = t('obs.error') + ': ' + (e.message || e)
@@ -4435,11 +4505,118 @@
         document.getElementById('menu-sheet').classList.remove('open')
       }
 
+      // ── Personal OAuth client management ────────────────────────────────
+      function setOAuthClientsMsg(text, kind) {
+        const el = document.getElementById('oauth-clients-msg')
+        if (!el) return
+        el.textContent = text || ''
+        el.className = 'models-msg' + (kind ? ' ' + kind : '')
+      }
+
+      async function openOAuthClients() {
+        closeMenu()
+        document.getElementById('oauth-clients-sheet').classList.add('open')
+        await loadOAuthClients()
+      }
+
+      function closeOAuthClients() {
+        document.getElementById('oauth-clients-sheet').classList.remove('open')
+      }
+
+      function renderOAuthClients(clients) {
+        const list = document.getElementById('oauth-client-list')
+        list.replaceChildren()
+        if (!clients.length) {
+          const empty = document.createElement('p')
+          empty.className = 'models-sub'
+          empty.textContent = t('oauthClients.empty')
+          list.appendChild(empty)
+          return
+        }
+        clients.forEach((client) => {
+          const card = document.createElement('article')
+          card.className = 'oauth-client-card'
+          const head = document.createElement('div')
+          head.className = 'oauth-client-head'
+          const name = document.createElement('div')
+          name.className = 'oauth-client-name'
+          name.textContent = client.clientName || client.clientId
+          const remove = document.createElement('button')
+          remove.type = 'button'
+          remove.className = 'oauth-client-delete'
+          remove.textContent = t('oauthClients.delete')
+          remove.onclick = () => deleteOAuthClient(client.clientId, client.clientName || client.clientId)
+          head.append(name, remove)
+          const meta = document.createElement('div')
+          meta.className = 'oauth-client-meta'
+          const registered = client.registrationDate
+            ? new Date(client.registrationDate * 1000).toLocaleString()
+            : '—'
+          meta.textContent = [
+            `ID: ${client.clientId}`,
+            ...(client.redirectUris || []).map((uri) => `Redirect: ${uri}`),
+            `Registered: ${registered}`,
+          ].join('\n')
+          card.append(head, meta)
+          list.appendChild(card)
+        })
+      }
+
+      async function loadOAuthClients() {
+        setOAuthClientsMsg(t('oauthClients.loading'))
+        try {
+          const clients = []
+          const seenCursors = new Set()
+          let cursor = ''
+          do {
+            if (cursor && seenCursors.has(cursor)) {
+              throw new Error(t('oauthClients.loadFail'))
+            }
+            if (cursor) seenCursors.add(cursor)
+            const suffix = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
+            const res = await fetch(`${WORKER_URL}/settings/oauth/clients${suffix}`, {
+              headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+            })
+            const data = await readJsonResponse(res)
+            if (!res.ok || !data.ok) {
+              throw new Error(data.error || t('oauthClients.loadFail'))
+            }
+            clients.push(...(Array.isArray(data.clients) ? data.clients : []))
+            cursor = typeof data.cursor === 'string' ? data.cursor : ''
+          } while (cursor)
+          renderOAuthClients(clients)
+          setOAuthClientsMsg('')
+        } catch (e) {
+          setOAuthClientsMsg(String(e.message || e), 'error')
+        }
+      }
+
+      async function deleteOAuthClient(clientId, clientName) {
+        if (!confirm(t('oauthClients.confirm', { name: clientName }))) return
+        try {
+          const res = await fetch(
+            `${WORKER_URL}/settings/oauth/clients/${encodeURIComponent(clientId)}`,
+            {
+              method: 'DELETE',
+              headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+            }
+          )
+          const data = await readJsonResponse(res)
+          if (!res.ok || !data.ok) throw new Error(data.error || t('oauthClients.deleteFail'))
+          await loadOAuthClients()
+          setOAuthClientsMsg(t('oauthClients.deleted'), 'ok')
+        } catch (e) {
+          setOAuthClientsMsg(String(e.message || e), 'error')
+        }
+      }
+
       // ── Models control plane (provider cards) ────────────────────────────
       let _modelPresets = { llm: [], embedding: [] }
       let _modelsTab = 'llm'
       let _loadedLlmProvider = ''
       let _loadedEmbProvider = ''
+      let _loadedLlmHasKey = false
+      let _loadedEmbHasKey = false
 
       /** Safe JSON parse of fetch Response — avoids cryptic "Unexpected end of JSON input". */
       async function readJsonResponse(res) {
@@ -4691,26 +4868,27 @@
 
           document.getElementById('llm-base').value = data.llm?.baseURL || ''
           document.getElementById('llm-model').value = data.llm?.model || ''
-          // Show saved keys in the field (hidden by default; eye toggles plaintext)
-          const llmKey = data.llm?.apiKey || ''
-          document.getElementById('llm-key').value = llmKey
-          document.getElementById('llm-key').placeholder = llmKey
+          _loadedLlmHasKey = Boolean(data.llm?.hasApiKey)
+          // Persisted keys never leave the server. The field contains only a
+          // replacement key typed during this browser session.
+          document.getElementById('llm-key').value = ''
+          document.getElementById('llm-key').placeholder = _loadedLlmHasKey
             ? t('models.keyLoaded')
             : t('models.keyPh')
           document.getElementById('llm-key-hint').textContent =
-            data.llm?.hasApiKey || llmKey ? t('models.keySaved') : t('models.keyRequired')
+            _loadedLlmHasKey ? t('models.keySaved') : t('models.keyRequired')
           setKeyFieldVisibility('llm-key', false)
 
           document.getElementById('emb-base').value = data.embedding?.baseURL || ''
           document.getElementById('emb-model').value = data.embedding?.model || ''
           document.getElementById('emb-dim').value = data.embedding?.dimensions || 384
-          const embKey = data.embedding?.apiKey || ''
-          document.getElementById('emb-key').value = embKey
-          document.getElementById('emb-key').placeholder = embKey
+          _loadedEmbHasKey = Boolean(data.embedding?.hasApiKey)
+          document.getElementById('emb-key').value = ''
+          document.getElementById('emb-key').placeholder = _loadedEmbHasKey
             ? t('models.keyLoaded')
             : t('models.keyPhEmb')
           document.getElementById('emb-key-hint').textContent =
-            data.embedding?.hasApiKey || embKey ? t('models.keySaved') : t('models.keyRequired')
+            _loadedEmbHasKey ? t('models.keySaved') : t('models.keyRequired')
           setKeyFieldVisibility('emb-key', false)
 
           selectProvider('llm', llmId, false)
@@ -4764,21 +4942,22 @@
           })
           const data = await readJsonResponse(res)
           if (!res.ok || !data.ok) throw new Error(data.error || t('models.saveFail'))
-          // Re-fill keys from server response so UI stays in sync after save
-          const savedLlmKey = data.settings?.llm?.apiKey || body.llm.apiKey || ''
-          const savedEmbKey = data.settings?.embedding?.apiKey || body.embedding.apiKey || ''
-          document.getElementById('llm-key').value = savedLlmKey
-          document.getElementById('emb-key').value = savedEmbKey
-          document.getElementById('llm-key').placeholder = savedLlmKey
+          _loadedLlmHasKey = Boolean(data.settings?.llm?.hasApiKey)
+          _loadedEmbHasKey = Boolean(data.settings?.embedding?.hasApiKey)
+          // Clear newly typed credentials immediately after persistence. An eye
+          // toggle can reveal only unsaved input, never a stored credential.
+          document.getElementById('llm-key').value = ''
+          document.getElementById('emb-key').value = ''
+          document.getElementById('llm-key').placeholder = _loadedLlmHasKey
             ? t('models.keyLoaded')
             : t('models.keyPh')
-          document.getElementById('emb-key').placeholder = savedEmbKey
+          document.getElementById('emb-key').placeholder = _loadedEmbHasKey
             ? t('models.keyLoaded')
             : t('models.keyPhEmb')
-          document.getElementById('llm-key-hint').textContent = savedLlmKey
+          document.getElementById('llm-key-hint').textContent = _loadedLlmHasKey
             ? t('models.keySaved')
             : t('models.keyRequired')
-          document.getElementById('emb-key-hint').textContent = savedEmbKey
+          document.getElementById('emb-key-hint').textContent = _loadedEmbHasKey
             ? t('models.keySaved')
             : t('models.keyRequired')
           setKeyFieldVisibility('llm-key', false)
@@ -4929,7 +5108,27 @@
             if (!String(side.model || '').trim()) {
               throw new Error(t('models.needModel'))
             }
-            if (!String(side.apiKey || '').trim()) {
+            if (
+              !String(side.apiKey || '').trim() &&
+              (!_loadedLlmHasKey || side.provider !== _loadedLlmProvider)
+            ) {
+              throw new Error(t('models.needKeyTest'))
+            }
+          } else {
+            const localEmbedding = ['local', 'local-hash', 'local-hash-dev'].includes(
+              String(side.provider || '')
+            )
+            if (!localEmbedding && !String(side.baseURL || '').trim()) {
+              throw new Error(t('models.needBase'))
+            }
+            if (!String(side.model || '').trim()) {
+              throw new Error(t('models.needModel'))
+            }
+            if (
+              !localEmbedding &&
+              !String(side.apiKey || '').trim() &&
+              (!_loadedEmbHasKey || side.provider !== _loadedEmbProvider)
+            ) {
               throw new Error(t('models.needKeyTest'))
             }
           }

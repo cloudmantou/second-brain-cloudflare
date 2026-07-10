@@ -32,6 +32,7 @@ import {
   ensureTelemetryTables,
   flushTelemetry,
   getTelemetryConfig,
+  getTelemetryQueueStats,
   logMemoryEvent,
   logRequest,
   newTraceId,
@@ -58,6 +59,7 @@ import {
   rewriteRequestPublicOrigin,
 } from "./oauth/public-origin";
 import { hardenOAuthResponse, oauthMethodProbe } from "./oauth/harden";
+import { checkOAuthRedirectOrigin } from "./oauth/redirect-policy";
 import { readPublicUrl, siteConfigJson } from "./config/site";
 import { planRecallRequest, type RecallRequestPlan } from "./query-intent";
 
@@ -84,6 +86,8 @@ export interface Env {
   PUBLIC_URL?: string;
   PUBLIC_BASE_URL?: string;
   SITE_URL?: string;
+  /** Optional comma/newline-separated redirect origins allowed to authorize. */
+  OAUTH_ALLOWED_REDIRECT_ORIGINS?: string;
   /** OpenAI-compatible chat API (DeepSeek / MiniMax / MiMo / OpenAI). */
   LLM_BASE_URL?: string;
   LLM_API_KEY?: string;
@@ -243,12 +247,66 @@ function requireAuth(request: Request, env: Env): Response | null {
   return json({ ok: false, error: "Unauthorized" }, 401);
 }
 
-// Hosted OAuth login page. Styled to match the dashboard's token-entry card
-// (#auth-overlay in public/index.html) — same fonts, palette, and layout.
-function loginHtml(error?: string, actionUrl?: string): string {
-  // Keep query string (client_id, redirect_uri, PKCE, state) across POST
-  const action = actionUrl
-    ? actionUrl.replace(/"/g, "&quot;")
+interface OAuthLoginDetails {
+  clientName: string;
+  clientId: string;
+  redirectUri: string;
+  scope: string[];
+  cancelUrl: string;
+}
+
+function escapeOAuthHtml(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function normalizeOAuthScope(rawScope: unknown): string[] {
+  if (Array.isArray(rawScope)) {
+    const values = rawScope.map(String).map((value) => value.trim()).filter(Boolean);
+    return values.length ? values : ["mcp"];
+  }
+  if (typeof rawScope === "string" && rawScope.trim()) {
+    return rawScope.split(/\s+/).filter(Boolean);
+  }
+  return ["mcp"];
+}
+
+function oauthCancelUrl(redirectUri: string, state: unknown): string {
+  const cancel = new URL(redirectUri);
+  cancel.searchParams.set("error", "access_denied");
+  cancel.searchParams.set("error_description", "The owner denied this request");
+  if (typeof state === "string" && state) cancel.searchParams.set("state", state);
+  return cancel.toString();
+}
+
+// Hosted OAuth login page. All client-controlled metadata is escaped before
+// rendering because dynamic client registration is intentionally unauthenticated.
+function loginHtml(
+  error?: string,
+  actionUrl?: string,
+  details?: OAuthLoginDetails
+): string {
+  const action = actionUrl ? escapeOAuthHtml(actionUrl) : "";
+  const detailHtml = details
+    ? `<dl class="client-details">
+        <div><dt>请求访问的客户端</dt><dd>${escapeOAuthHtml(details.clientName)}</dd></div>
+        <div><dt>客户端 ID</dt><dd class="mono">${escapeOAuthHtml(details.clientId)}</dd></div>
+        <div><dt>回调地址</dt><dd class="mono">${escapeOAuthHtml(details.redirectUri)}</dd></div>
+        <div><dt>权限</dt><dd>${details.scope.includes("mcp") ? "读取、写入和删除你的 Second Brain 记忆" : escapeOAuthHtml(details.scope.join(", "))}</dd></div>
+      </dl>`
+    : "";
+  const formHtml = action && details
+    ? `<form method="POST" action="${action}">
+      <input type="password" name="password" placeholder="AUTH_TOKEN" autofocus autocomplete="current-password" />
+      <div class="actions">
+        <a class="cancel" href="${escapeOAuthHtml(details.cancelUrl)}">取消</a>
+        <button type="submit">授权连接</button>
+      </div>
+    </form>`
     : "";
   return `<!doctype html>
 <html lang="zh-CN">
@@ -257,8 +315,6 @@ function loginHtml(error?: string, actionUrl?: string): string {
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta name="theme-color" content="#F4F1EA" />
   <title>授权 · 第二大脑</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -279,6 +335,14 @@ function loginHtml(error?: string, actionUrl?: string): string {
     h1 { font-family: var(--font-serif); font-size: 29px; font-weight: 500; margin-bottom: 9px; letter-spacing: -0.015em; }
     p { font-size: 14px; color: var(--text-secondary); margin-bottom: 34px; text-align: center; line-height: 1.6; max-width: 300px; }
     form { width: 100%; display: flex; flex-direction: column; gap: 11px; margin-bottom: 14px; }
+    .client-details { width: 100%; background: var(--bg-card); border: 0.5px solid var(--border-input); border-radius: 14px; padding: 4px 16px; margin: -14px 0 20px; }
+    .client-details > div { padding: 11px 0; border-bottom: 0.5px solid var(--border-input); }
+    .client-details > div:last-child { border-bottom: 0; }
+    dt { color: var(--text-tertiary); font-size: 11px; margin-bottom: 4px; }
+    dd { font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+    .actions { display: grid; grid-template-columns: 0.75fr 1.25fr; gap: 10px; }
+    .cancel { display: flex; align-items: center; justify-content: center; padding: 15px; border: 0.5px solid var(--border-input); border-radius: 13px; color: var(--text-secondary); text-decoration: none; font-size: 14px; }
     input { width: 100%; padding: 14px 16px; background: var(--bg-card); border: 0.5px solid var(--border-input); border-radius: 13px; font-family: var(--font-sans); font-size: 15px; color: var(--text-primary); outline: none; transition: border-color 0.18s, box-shadow 0.18s; }
     input::placeholder { color: var(--text-tertiary); }
     input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
@@ -293,16 +357,32 @@ function loginHtml(error?: string, actionUrl?: string): string {
   <div class="auth-card">
     <div class="brain-logo"><i class="ti ti-brain"></i></div>
     <h1>第二大脑</h1>
-    <p>授权 ChatGPT / MCP 客户端访问你的记忆。请输入服务器上的 AUTH_TOKEN（Bearer 令牌）。</p>
-    <form method="POST" action="${action}">
-      <input type="password" name="password" placeholder="AUTH_TOKEN" autofocus autocomplete="current-password" />
-      <button type="submit">授权连接</button>
-    </form>
-    <div class="auth-error">${error ? error : ""}</div>
+    <p>这是个人 MCP 授权请求。确认客户端和回调地址后，再输入服务器 AUTH_TOKEN。</p>
+    ${detailHtml}
+    ${formHtml}
+    <div class="auth-error">${error ? escapeOAuthHtml(error) : ""}</div>
     <p class="hint">仅个人实例使用。同意后将跳回客户端并完成 OAuth。</p>
   </div>
 </body>
 </html>`;
+}
+
+function oauthLoginResponse(html: string, status = 200): Response {
+  return new Response(html, {
+    status,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      Pragma: "no-cache",
+      "Referrer-Policy": "no-referrer",
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY",
+      "Content-Security-Policy":
+        "default-src 'none'; style-src 'unsafe-inline' https://cdn.jsdelivr.net; " +
+        "font-src https://cdn.jsdelivr.net; img-src data:; form-action 'self'; " +
+        "base-uri 'none'; frame-ancestors 'none'",
+    },
+  });
 }
 
 async function embed(
@@ -2021,12 +2101,17 @@ async function withRequestTelemetry(
 
   let reqPreview: string | null = null;
   let reqHash: string | null = null;
-  let requestBytes = 0;
-  if (!shouldSuppressRequestBodyTelemetry(url.pathname)) {
+  const declaredLength = Number(request.headers.get("content-length"));
+  let requestBytes = Number.isFinite(declaredLength) && declaredLength > 0
+    ? declaredLength
+    : 0;
+  const mayReadBody =
+    config.contentLogging === "preview" || config.contentLogging === "full";
+  if (!shouldSuppressRequestBodyTelemetry(url.pathname) && mayReadBody) {
     try {
       const clone = request.clone();
       const text = await clone.text().catch(() => "");
-      requestBytes = new TextEncoder().encode(text).length;
+      if (!requestBytes) requestBytes = new TextEncoder().encode(text).length;
       const p = previewText(text, config.contentLogging, config.previewMaxChars);
       reqPreview = p.preview;
       reqHash = p.hash;
@@ -2133,22 +2218,56 @@ const defaultHandler = {
           { status: 400, headers: { "Content-Type": "text/plain; charset=utf-8" } }
         );
       }
+      if (!oauthReq.codeChallenge || oauthReq.codeChallengeMethod !== "S256") {
+        return new Response("OAuth authorization requires PKCE with code_challenge_method=S256.", {
+          status: 400,
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        });
+      }
+
+      const scope = normalizeOAuthScope(oauthReq.scope);
+      if (oauthReq.responseType !== "code") {
+        return new Response("OAuth authorization requires response_type=code.", {
+          status: 400,
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        });
+      }
+      if (scope.length !== 1 || scope[0] !== "mcp") {
+        return new Response("OAuth authorization supports only scope=mcp.", {
+          status: 400,
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        });
+      }
+      const clientInfo = await (env as any).OAUTH_PROVIDER.lookupClient(oauthReq.clientId);
+      const details: OAuthLoginDetails = {
+        clientName: clientInfo?.clientName || oauthReq.clientId,
+        clientId: oauthReq.clientId,
+        redirectUri: oauthReq.redirectUri,
+        scope,
+        cancelUrl: oauthCancelUrl(oauthReq.redirectUri, oauthReq.state),
+      };
+      const redirectPolicy = checkOAuthRedirectOrigin(
+        oauthReq.redirectUri,
+        env.OAUTH_ALLOWED_REDIRECT_ORIGINS
+      );
+      if (!redirectPolicy.allowed) {
+        return oauthLoginResponse(
+          loginHtml(
+            `已拒绝未列入 OAUTH_ALLOWED_REDIRECT_ORIGINS 的回调域名：${redirectPolicy.redirectOrigin || oauthReq.redirectUri}`,
+            undefined,
+            details
+          ),
+          403
+        );
+      }
       if (request.method === "POST") {
         const form = await request.formData();
         if (form.get("password") !== env.AUTH_TOKEN) {
-          return new Response(loginHtml("令牌无效 / Invalid token", formAction), {
-            status: 401, headers: { "Content-Type": "text/html; charset=utf-8" },
-          });
+          return oauthLoginResponse(
+            loginHtml("令牌无效 / Invalid token", formAction, details),
+            401
+          );
         }
-        // Default scope to mcp when client omits scope
-        const rawScope = oauthReq.scope;
-        const scope = Array.isArray(rawScope)
-          ? rawScope.length
-            ? rawScope
-            : ["mcp"]
-          : typeof rawScope === "string" && rawScope.trim()
-            ? rawScope.split(/\s+/).filter(Boolean)
-            : ["mcp"];
         const { redirectTo } = await (env as any).OAUTH_PROVIDER.completeAuthorization({
           request: oauthReq,
           userId: "owner",
@@ -2157,9 +2276,7 @@ const defaultHandler = {
         });
         return Response.redirect(redirectTo, 302);
       }
-      return new Response(loginHtml(undefined, formAction), {
-        headers: { "Content-Type": "text/html; charset=utf-8" },
-      });
+      return oauthLoginResponse(loginHtml(undefined, formAction, details));
     }
 
     await ensureDatabase(env);
@@ -2779,6 +2896,50 @@ const defaultHandler = {
       });
     }
 
+    // ── Control plane: personal OAuth clients ───────────────────────────────
+    if (url.pathname === "/settings/oauth/clients" && request.method === "GET") {
+      const authErr = requireAuth(request, env);
+      if (authErr) return authErr;
+      const cursor = url.searchParams.get("cursor") || undefined;
+      const result = await (env as any).OAUTH_PROVIDER.listClients({
+        limit: 100,
+        cursor,
+      });
+      return json({
+        ok: true,
+        clients: (result.items ?? []).map((client: any) => ({
+          clientId: client.clientId,
+          clientName: client.clientName || client.clientId,
+          redirectUris: Array.isArray(client.redirectUris) ? client.redirectUris : [],
+          grantTypes: Array.isArray(client.grantTypes) ? client.grantTypes : [],
+          registrationDate: client.registrationDate ?? null,
+        })),
+        cursor: result.cursor,
+      });
+    }
+
+    const oauthClientSettingsPrefix = "/settings/oauth/clients/";
+    if (
+      url.pathname.startsWith(oauthClientSettingsPrefix) &&
+      request.method === "DELETE"
+    ) {
+      const authErr = requireAuth(request, env);
+      if (authErr) return authErr;
+      let clientId = "";
+      try {
+        clientId = decodeURIComponent(
+          url.pathname.slice(oauthClientSettingsPrefix.length)
+        ).trim();
+      } catch {
+        return json({ ok: false, error: "Invalid OAuth client ID" }, 400);
+      }
+      if (!clientId || clientId.includes("/")) {
+        return json({ ok: false, error: "Invalid OAuth client ID" }, 400);
+      }
+      await (env as any).OAUTH_PROVIDER.deleteClient(clientId);
+      return json({ ok: true, deleted: clientId });
+    }
+
     // ── Control plane: model settings ───────────────────────────────────────
     if (url.pathname === "/settings/models" && request.method === "GET") {
       const authErr = requireAuth(request, env);
@@ -3167,6 +3328,7 @@ const defaultHandler = {
         },
         top_operations: topOps.results ?? [],
         telemetry: await loadTelemetryConfig(env),
+        telemetry_queue: getTelemetryQueueStats(),
       });
     }
 
@@ -3432,6 +3594,37 @@ async function handleOAuthDiscovery(
   return null;
 }
 
+async function rejectUnsupportedOAuthTokenScope(
+  request: Request,
+  pathname: string
+): Promise<Response | null> {
+  if (pathname !== "/oauth/token" || request.method !== "POST") return null;
+  const contentType = request.headers.get("content-type") || "";
+  if (!contentType.includes("application/x-www-form-urlencoded")) return null;
+  let params: URLSearchParams;
+  try {
+    params = new URLSearchParams(await request.clone().text());
+  } catch {
+    return null;
+  }
+  if (!params.has("scope")) return null;
+  const requested = (params.get("scope") || "").split(/\s+/).filter(Boolean);
+  if (requested.length === 1 && requested[0] === "mcp") return null;
+  return new Response(
+    JSON.stringify({
+      error: "invalid_scope",
+      error_description: "This personal MCP supports only scope=mcp.",
+    }),
+    {
+      status: 400,
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+    }
+  );
+}
+
 export default {
   fetch: async (req: Request, env: Env, ctx: ExecutionContext) => {
     // 1) Discovery must work before OAuthProvider / static routing
@@ -3443,6 +3636,11 @@ export default {
     // 2) Friendly GET/HEAD probes for token/register (diagnostics / curl -I)
     const probe = oauthMethodProbe(req, url.pathname);
     if (probe) return probe;
+
+    // The provider downscopes unknown values to an empty scope but does not
+    // enforce that scope at the MCP route. Reject misleading token scopes here.
+    const tokenScopeError = await rejectUnsupportedOAuthTokenScope(req, url.pathname);
+    if (tokenScopeError) return tokenScopeError;
 
     // 3) Normalize origin so token WWW-Authenticate + redirects use public HTTPS
     const normalized = rewriteRequestPublicOrigin(

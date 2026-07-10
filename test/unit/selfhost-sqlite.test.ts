@@ -122,7 +122,59 @@ describe("SqliteKVNamespace", () => {
     expect(await kv.get("a")).toBe("1");
     const listed = await kv.list({ prefix: "a" });
     expect(listed.keys.map((k) => k.name).sort()).toEqual(["a", "ab"]);
+    const firstPage = await kv.list({ prefix: "a", limit: 1 });
+    expect(firstPage).toMatchObject({
+      keys: [{ name: "a" }],
+      list_complete: false,
+      cursor: "a",
+    });
+    const secondPage = await kv.list({
+      prefix: "a",
+      limit: 1,
+      cursor: firstPage.cursor,
+    });
+    expect(secondPage).toMatchObject({
+      keys: [{ name: "ab" }],
+      list_complete: true,
+    });
     await kv.delete("a");
     expect(await kv.get("a")).toBeNull();
+  });
+
+  it("expires inactive OAuth clients after 30 days and renews active clients", async () => {
+    let now = 1_700_000_000_000;
+    kv = new SqliteKVNamespace(raw, { now: () => now });
+    await kv.put(
+      "client:test",
+      JSON.stringify({ clientId: "test" }),
+      { expirationTtl: 2_160 * 60 * 60 }
+    );
+    const initial = raw
+      .prepare("SELECT expires_at FROM sb_kv WHERE key = ?")
+      .get("client:test") as { expires_at: number };
+    expect(initial.expires_at).toBe(now + 30 * 24 * 60 * 60 * 1000);
+
+    now += 29 * 24 * 60 * 60 * 1000;
+    expect(await kv.get("client:test", { type: "json" })).toEqual({ clientId: "test" });
+    const renewed = raw
+      .prepare("SELECT expires_at FROM sb_kv WHERE key = ?")
+      .get("client:test") as { expires_at: number };
+    expect(renewed.expires_at).toBe(now + 30 * 24 * 60 * 60 * 1000);
+
+    now += 31 * 24 * 60 * 60 * 1000;
+    expect(await kv.get("client:test")).toBeNull();
+  });
+
+  it("assigns the idle expiry to legacy OAuth clients", () => {
+    raw.exec(`
+      INSERT INTO sb_kv (key, value, expires_at)
+      VALUES ('client:legacy', '{"clientId":"legacy"}', NULL)
+    `);
+    const now = 1_800_000_000_000;
+    kv = new SqliteKVNamespace(raw, { now: () => now });
+    const migrated = raw
+      .prepare("SELECT expires_at FROM sb_kv WHERE key = ?")
+      .get("client:legacy") as { expires_at: number };
+    expect(migrated.expires_at).toBe(now + 30 * 24 * 60 * 60 * 1000);
   });
 });

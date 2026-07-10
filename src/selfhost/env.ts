@@ -74,6 +74,8 @@ export function createSelfhostEnv(options: SelfhostOptions = {}): {
       process.env.PUBLIC_BASE_URL ||
       process.env.PUBLIC_URL ||
       process.env.SITE_URL,
+    OAUTH_ALLOWED_REDIRECT_ORIGINS:
+      process.env.OAUTH_ALLOWED_REDIRECT_ORIGINS,
     LLM_BASE_URL: process.env.LLM_BASE_URL,
     LLM_API_KEY: process.env.LLM_API_KEY,
     LLM_MODEL: process.env.LLM_MODEL,

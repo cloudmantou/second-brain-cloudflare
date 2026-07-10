@@ -38,8 +38,8 @@ export function previewText(
 }
 
 /**
- * Credential exchange and MCP bodies may contain the owner token, OAuth codes,
- * or private memories. Never preview or hash them, regardless of telemetry mode.
+ * Credential exchange, model settings, and memory write/chat bodies may contain
+ * owner tokens, provider keys, or private memories. Never preview or hash them.
  */
 export function shouldSuppressRequestBodyTelemetry(pathname: string): boolean {
   const p = pathname.replace(/\/+$/, "") || "/";
@@ -47,7 +47,16 @@ export function shouldSuppressRequestBodyTelemetry(pathname: string): boolean {
     p === "/oauth" ||
     p.startsWith("/oauth/") ||
     p === "/mcp" ||
-    p.startsWith("/mcp/")
+    p.startsWith("/mcp/") ||
+    p === "/settings/models" ||
+    p.startsWith("/settings/models/") ||
+    p === "/settings/oauth" ||
+    p.startsWith("/settings/oauth/") ||
+    p === "/import" ||
+    p === "/capture" ||
+    p === "/append" ||
+    p === "/update" ||
+    p === "/chat"
   );
 }
 

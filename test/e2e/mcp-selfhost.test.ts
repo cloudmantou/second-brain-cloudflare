@@ -106,6 +106,7 @@ beforeAll(async () => {
         DATABASE_PATH: path.join(tempDir, "memory.db"),
         ALLOW_DEV_EMBEDDING: "true",
         EMBEDDING_PROVIDER: "local-hash-dev",
+        OAUTH_ALLOWED_REDIRECT_ORIGINS: "https://chatgpt.com,http://127.0.0.1,http://localhost",
         PUBLIC_URL: baseUrl,
         HOST: "127.0.0.1",
         PORT: String(port),
@@ -128,6 +129,33 @@ afterAll(async () => {
 });
 
 describe("self-host MCP and personal OAuth", () => {
+  it("keeps OAuth issuer and resource consistent behind forwarded proxy headers", async () => {
+    const proxyHeaders = {
+      "X-Forwarded-Proto": "https",
+      "X-Forwarded-Host": "proxy-internal.invalid",
+    };
+    const authorizationServer = await fetch(
+      `${baseUrl}/.well-known/oauth-authorization-server`,
+      { headers: proxyHeaders }
+    );
+    expect(authorizationServer.status).toBe(200);
+    expect(await authorizationServer.json()).toMatchObject({
+      issuer: baseUrl,
+      authorization_endpoint: `${baseUrl}/oauth/authorize`,
+      token_endpoint: `${baseUrl}/oauth/token`,
+    });
+
+    const protectedResource = await fetch(
+      `${baseUrl}/.well-known/oauth-protected-resource/mcp`,
+      { headers: proxyHeaders }
+    );
+    expect(protectedResource.status).toBe(200);
+    expect(await protectedResource.json()).toMatchObject({
+      resource: `${baseUrl}/mcp`,
+      authorization_servers: [baseUrl],
+    });
+  });
+
   it("rejects anonymous access and returns complete JSON-RPC to the owner", async () => {
     const anonymous = await fetch(mcpRequest(null, initializeMessage(1)));
     expect(anonymous.status).toBe(401);
@@ -208,7 +236,30 @@ describe("self-host MCP and personal OAuth", () => {
 
     const login = await fetch(authorizeUrl, { redirect: "manual" });
     expect(login.status).toBe(200);
-    expect(await login.text()).toContain("仅个人实例使用");
+    expect(login.headers.get("cache-control")).toContain("no-store");
+    expect(login.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(login.headers.get("x-frame-options")).toBe("DENY");
+    expect(login.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    const loginHtml = await login.text();
+    expect(loginHtml).toContain("仅个人实例使用");
+    expect(loginHtml).toContain("private-second-brain-e2e");
+    expect(loginHtml).toContain("https://chatgpt.com/aip/callback");
+    expect(loginHtml).toContain("读取、写入和删除");
+
+    const plainPkce = new URL(authorizeUrl);
+    plainPkce.searchParams.set("code_challenge_method", "plain");
+    const plainResponse = await fetch(plainPkce, { redirect: "manual" });
+    expect(plainResponse.status).toBe(400);
+
+    const unsupportedScope = new URL(authorizeUrl);
+    unsupportedScope.searchParams.set("scope", "read-only");
+    expect((await fetch(unsupportedScope, { redirect: "manual" })).status).toBe(400);
+
+    const unsupportedResponseType = new URL(authorizeUrl);
+    unsupportedResponseType.searchParams.set("response_type", "token");
+    expect(
+      (await fetch(unsupportedResponseType, { redirect: "manual" })).status
+    ).toBe(400);
 
     const denied = await fetch(authorizeUrl, {
       method: "POST",
@@ -218,17 +269,80 @@ describe("self-host MCP and personal OAuth", () => {
     });
     expect(denied.status).toBe(401);
 
-    const authorized = await fetch(authorizeUrl, {
+    const approveCode = async (): Promise<string> => {
+      const authorized = await fetch(authorizeUrl, {
+        method: "POST",
+        redirect: "manual",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ password: AUTH_TOKEN }),
+      });
+      expect(authorized.status).toBe(302);
+      const redirect = new URL(authorized.headers.get("location") || "");
+      expect(redirect.searchParams.get("state")).toBe("private-e2e-state");
+      const code = redirect.searchParams.get("code");
+      expect(code).toBeTruthy();
+      return code || "";
+    };
+
+    const wrongVerifierCode = await approveCode();
+    const wrongVerifier = await fetch(`${baseUrl}/oauth/token`, {
       method: "POST",
-      redirect: "manual",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ password: AUTH_TOKEN }),
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: wrongVerifierCode,
+        redirect_uri: redirectUri,
+        client_id: clientInfo.client_id,
+        code_verifier: `${verifier}-wrong`,
+        resource: `${baseUrl}/mcp`,
+      }),
     });
-    expect(authorized.status).toBe(302);
-    const redirect = new URL(authorized.headers.get("location") || "");
-    expect(redirect.searchParams.get("state")).toBe("private-e2e-state");
-    const code = redirect.searchParams.get("code");
-    expect(code).toBeTruthy();
+    expect(wrongVerifier.status).toBe(400);
+
+    const wrongRedirectCode = await approveCode();
+    const wrongRedirect = await fetch(`${baseUrl}/oauth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: wrongRedirectCode,
+        redirect_uri: "https://chatgpt.com/not-the-registered-callback",
+        client_id: clientInfo.client_id,
+        code_verifier: verifier,
+        resource: `${baseUrl}/mcp`,
+      }),
+    });
+    expect(wrongRedirect.status).toBe(400);
+
+    const oneTimeCode = await approveCode();
+    const oneTimeExchange = await fetch(`${baseUrl}/oauth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: oneTimeCode,
+        redirect_uri: redirectUri,
+        client_id: clientInfo.client_id,
+        code_verifier: verifier,
+        resource: `${baseUrl}/mcp`,
+      }),
+    });
+    expect(oneTimeExchange.status).toBe(200);
+    const reusedCode = await fetch(`${baseUrl}/oauth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: oneTimeCode,
+        redirect_uri: redirectUri,
+        client_id: clientInfo.client_id,
+        code_verifier: verifier,
+        resource: `${baseUrl}/mcp`,
+      }),
+    });
+    expect(reusedCode.status).toBe(400);
+
+    const code = await approveCode();
 
     const tokenResponse = await fetch(`${baseUrl}/oauth/token`, {
       method: "POST",
@@ -245,15 +359,37 @@ describe("self-host MCP and personal OAuth", () => {
     expect(tokenResponse.status).toBe(200);
     const token = (await tokenResponse.json()) as {
       access_token: string;
+      refresh_token: string;
       token_type: string;
       scope: string;
     };
     expect(token).toMatchObject({ token_type: "bearer", scope: "mcp" });
+    expect(token.refresh_token).toBeTruthy();
 
     const oauthAccess = await fetch(
       mcpRequest(token.access_token, initializeMessage(3))
     );
     expect(oauthAccess.status).toBe(200);
+    expect(await oauthAccess.json()).toMatchObject({
+      jsonrpc: "2.0",
+      id: 3,
+      result: { protocolVersion: "2025-06-18" },
+    });
+
+    const oauthTransport = new StreamableHTTPClientTransport(
+      new URL(`${baseUrl}/mcp`),
+      { requestInit: { headers: { Authorization: `Bearer ${token.access_token}` } } }
+    );
+    const oauthClient = new Client({ name: "oauth-tools-e2e", version: "1.0.0" });
+    await oauthClient.connect(oauthTransport);
+    const oauthCatalogue = await oauthClient.listTools();
+    const recent = await oauthClient.callTool({
+      name: "list_recent",
+      arguments: { n: 1 },
+    });
+    await oauthClient.close();
+    expect(oauthCatalogue.tools.map((tool) => tool.name)).toContain("list_recent");
+    expect(recent.isError).not.toBe(true);
 
     const revoked = await fetch(`${baseUrl}/oauth/token`, {
       method: "POST",
@@ -269,5 +405,213 @@ describe("self-host MCP and personal OAuth", () => {
       mcpRequest(token.access_token, initializeMessage(4))
     );
     expect(afterRevocation.status).toBe(401);
+
+    const invalidRefreshScope = await fetch(`${baseUrl}/oauth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: token.refresh_token,
+        client_id: clientInfo.client_id,
+        resource: `${baseUrl}/mcp`,
+        scope: "read-only",
+      }),
+    });
+    expect(invalidRefreshScope.status).toBe(400);
+    expect(await invalidRefreshScope.json()).toMatchObject({
+      error: "invalid_scope",
+    });
+
+    const refreshResponse = await fetch(`${baseUrl}/oauth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: token.refresh_token,
+        client_id: clientInfo.client_id,
+        resource: `${baseUrl}/mcp`,
+      }),
+    });
+    expect(refreshResponse.status).toBe(200);
+    const refreshed = (await refreshResponse.json()) as {
+      access_token: string;
+      refresh_token: string;
+    };
+    expect(refreshed.access_token).toBeTruthy();
+    expect(refreshed.refresh_token).toBeTruthy();
+    expect(
+      (await fetch(mcpRequest(refreshed.access_token, initializeMessage(5)))).status
+    ).toBe(200);
+
+    const revokedRefresh = await fetch(`${baseUrl}/oauth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        token: refreshed.refresh_token,
+        client_id: clientInfo.client_id,
+      }),
+    });
+    expect(revokedRefresh.status).toBe(200);
+
+    const afterRefreshRevocation = await fetch(`${baseUrl}/oauth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: refreshed.refresh_token,
+        client_id: clientInfo.client_id,
+        resource: `${baseUrl}/mcp`,
+      }),
+    });
+    expect(afterRefreshRevocation.status).toBe(400);
+    expect(
+      (await fetch(mcpRequest(refreshed.access_token, initializeMessage(6)))).status
+    ).toBe(401);
+
+    const managedClients = await fetch(`${baseUrl}/settings/oauth/clients`, {
+      headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+    });
+    expect(managedClients.status).toBe(200);
+    expect(
+      ((await managedClients.json()) as { clients: Array<{ clientId: string }> }).clients
+        .map((item) => item.clientId)
+    ).toContain(clientInfo.client_id);
+
+    const deletedClient = await fetch(
+      `${baseUrl}/settings/oauth/clients/${encodeURIComponent(clientInfo.client_id)}`,
+      {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+      }
+    );
+    expect(deletedClient.status).toBe(200);
+    expect(await deletedClient.json()).toMatchObject({
+      ok: true,
+      deleted: clientInfo.client_id,
+    });
+  });
+
+  it("uses narrow OAuth body limits while retaining the larger import limit", async () => {
+    const oversizedRegistration = await fetch(`${baseUrl}/oauth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ padding: "x".repeat(70 * 1024) }),
+    });
+    expect(oversizedRegistration.status).toBe(413);
+
+    const anonymousImport = await fetch(`${baseUrl}/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // Deliberately invalid JSON: a 401 proves onRequest auth ran before the
+      // parser tried to buffer/parse this otherwise-expensive body.
+      body: "x".repeat(300 * 1024),
+    });
+    expect(anonymousImport.status).toBe(401);
+
+    const importResponse = await fetch(`${baseUrl}/import`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${AUTH_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ entries: [], padding: "x".repeat(300 * 1024) }),
+    });
+    expect(importResponse.status).toBe(200);
+  });
+
+  it("rejects authorization redirects outside the personal allowlist", async () => {
+    const redirectUri = "https://evil.example/callback";
+    const registration = await fetch(`${baseUrl}/oauth/register`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Forwarded-For": "198.51.100.20",
+      },
+      body: JSON.stringify({
+        client_name: '<img src=x onerror="alert(1)">',
+        redirect_uris: [redirectUri],
+        grant_types: ["authorization_code"],
+        response_types: ["code"],
+        token_endpoint_auth_method: "none",
+      }),
+    });
+    expect(registration.status).toBe(201);
+    const client = await registration.json() as { client_id: string };
+    const authorize = new URL(`${baseUrl}/oauth/authorize`);
+    authorize.searchParams.set("response_type", "code");
+    authorize.searchParams.set("client_id", client.client_id);
+    authorize.searchParams.set("redirect_uri", redirectUri);
+    authorize.searchParams.set("scope", "mcp");
+    authorize.searchParams.set("code_challenge", "test-challenge");
+    authorize.searchParams.set("code_challenge_method", "S256");
+
+    const blocked = await fetch(authorize, { redirect: "manual" });
+    expect(blocked.status).toBe(403);
+    const blockedHtml = await blocked.text();
+    expect(blockedHtml).toContain("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;");
+    expect(blockedHtml).not.toContain('<img src=x onerror="alert(1)">');
+  });
+
+  it("rate-limits repeated dynamic client registrations", async () => {
+    const statuses: number[] = [];
+    for (let i = 0; i < 6; i++) {
+      const response = await fetch(`${baseUrl}/oauth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client_name: `rate-test-${i}`,
+          redirect_uris: [`http://127.0.0.1:${43000 + i}/callback`],
+          grant_types: ["authorization_code"],
+          response_types: ["code"],
+          token_endpoint_auth_method: "none",
+        }),
+      });
+      statuses.push(response.status);
+    }
+    expect(statuses).toContain(429);
+  });
+
+  it("blocks repeated wrong owner-token attempts for fifteen minutes", async () => {
+    const redirectUri = "http://localhost:43199/callback";
+    const registration = await fetch(`${baseUrl}/oauth/register`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Forwarded-For": "198.51.100.20",
+      },
+      body: JSON.stringify({
+        client_name: "failed-auth-rate-test",
+        redirect_uris: [redirectUri],
+        grant_types: ["authorization_code"],
+        response_types: ["code"],
+        token_endpoint_auth_method: "none",
+      }),
+    });
+    expect(registration.status).toBe(201);
+    const client = await registration.json() as { client_id: string };
+    const authorize = new URL(`${baseUrl}/oauth/authorize`);
+    authorize.searchParams.set("response_type", "code");
+    authorize.searchParams.set("client_id", client.client_id);
+    authorize.searchParams.set("redirect_uri", redirectUri);
+    authorize.searchParams.set("scope", "mcp");
+    authorize.searchParams.set("code_challenge", "failed-auth-test-challenge");
+    authorize.searchParams.set("code_challenge_method", "S256");
+
+    const statuses: number[] = [];
+    for (let i = 0; i < 6; i++) {
+      const response = await fetch(authorize, {
+        method: "POST",
+        redirect: "manual",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-Forwarded-For": "198.51.100.20",
+        },
+        body: new URLSearchParams({ password: `wrong-${i}` }),
+      });
+      statuses.push(response.status);
+    }
+    expect(statuses).toContain(429);
+    const blocked = statuses.lastIndexOf(429);
+    expect(blocked).toBeGreaterThanOrEqual(0);
   });
 });

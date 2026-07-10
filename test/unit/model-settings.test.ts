@@ -80,7 +80,7 @@ describe("model-settings helpers", () => {
     expect(next.llm.model).toBe("deepseek-reasoner");
   });
 
-  it("public view returns full key for auth-gated UI edit", () => {
+  it("public view never returns stored API keys", () => {
     const effective = emptyModelSettings();
     effective.llm = {
       provider: "deepseek",
@@ -88,14 +88,16 @@ describe("model-settings helpers", () => {
       apiKey: "sk-super-secret-value",
       model: "deepseek-chat",
     };
+    effective.embedding.apiKey = "embedding-super-secret";
     const pub = toPublicModelSettings(effective, {
       hasStored: true,
       hasEnvLlm: false,
       hasEnvEmbed: false,
     });
-    // Control-plane GET is auth-protected; UI needs the real key to show/edit.
-    expect(pub.llm.apiKey).toBe("sk-super-secret-value");
+    expect(pub.llm.apiKey).toBe("");
     expect(pub.llm.hasApiKey).toBe(true);
+    expect(pub.embedding.apiKey).toBe("");
+    expect(pub.embedding.hasApiKey).toBe(true);
     expect(pub.presets.llm.length).toBeGreaterThan(0);
   });
 

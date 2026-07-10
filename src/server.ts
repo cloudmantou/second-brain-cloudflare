@@ -11,7 +11,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import Fastify from "fastify";
+import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import dotenv from "dotenv";
 import worker, { initializeDatabase } from "./index";
 import {
@@ -22,6 +22,7 @@ import { handleWithWorker } from "./selfhost/fetch-adapter";
 import { getEffectiveModelSettings } from "./settings/store";
 import { isDevLocalProvider } from "./settings/model-settings";
 import { flushTelemetry } from "./telemetry";
+import { createFixedWindowRateLimiter } from "./selfhost/rate-limit";
 
 dotenv.config();
 
@@ -84,9 +85,83 @@ async function main() {
 
   const app = Fastify({
     logger: true,
-    // Allow Cloudflare export JSON uploads (default 1MB is too small for large brains)
-    bodyLimit: 32 * 1024 * 1024,
+    // Keep the control plane narrow by default. Import and MCP receive explicit
+    // route-level limits below.
+    bodyLimit: 256 * 1024,
+    // Only the same-host reverse proxy may provide X-Forwarded-For.
+    trustProxy: ["127.0.0.1", "::1"],
   });
+
+  const oauthRegistrationBurstLimiter = createFixedWindowRateLimiter({
+    limit: 5,
+    windowMs: 60_000,
+  });
+  const oauthRegistrationHourlyLimiter = createFixedWindowRateLimiter({
+    limit: 20,
+    windowMs: 60 * 60_000,
+  });
+  const oauthFailedAuthorizationLimiter = createFixedWindowRateLimiter({
+    limit: 5,
+    windowMs: 15 * 60_000,
+  });
+  const oauthTokenLimiter = createFixedWindowRateLimiter({
+    limit: 30,
+    windowMs: 60_000,
+  });
+
+  function oauthRateLimitPreHandler(
+    ...limiters: Array<ReturnType<typeof createFixedWindowRateLimiter>>
+  ) {
+    return async (req: FastifyRequest, reply: FastifyReply) => {
+      if (req.method !== "POST") return;
+      const results = limiters.map((limiter) => limiter.consume(req.ip || "unknown"));
+      const denied = results.find((result) => !result.allowed);
+      if (!denied) return;
+      return reply
+        .code(429)
+        .header("Retry-After", String(denied.retryAfterSeconds))
+        .header("Cache-Control", "no-store")
+        .send({
+          ok: false,
+          error: "Too many OAuth requests. Try again later.",
+        });
+    };
+  }
+
+  async function failedAuthorizationRateLimitPreHandler(
+    req: FastifyRequest,
+    reply: FastifyReply
+  ) {
+    if (req.method !== "POST") return;
+    const rawBody = Buffer.isBuffer(req.body)
+      ? req.body.toString("utf8")
+      : typeof req.body === "string"
+        ? req.body
+        : "";
+    const suppliedPassword = new URLSearchParams(rawBody).get("password");
+    if (suppliedPassword === env.AUTH_TOKEN) return;
+    const result = oauthFailedAuthorizationLimiter.consume(req.ip || "unknown");
+    if (result.allowed) return;
+    return reply
+      .code(429)
+      .header("Retry-After", String(result.retryAfterSeconds))
+      .header("Cache-Control", "no-store")
+      .send({
+        ok: false,
+        error: "Too many failed owner authorization attempts. Try again later.",
+      });
+  }
+
+  async function requireOwnerBeforeBody(
+    req: FastifyRequest,
+    reply: FastifyReply
+  ) {
+    if (req.headers.authorization === `Bearer ${env.AUTH_TOKEN}`) return;
+    return reply
+      .code(401)
+      .header("Cache-Control", "no-store")
+      .send({ ok: false, error: "Unauthorized" });
+  }
 
   app.addContentTypeParser(
     "application/x-www-form-urlencoded",
@@ -123,6 +198,47 @@ async function main() {
       devEmbedding: isDevLocalProvider(eff.embedding.provider),
     };
   });
+
+  const forwardToWorker = async (req: FastifyRequest, reply: FastifyReply) => {
+    await handleWithWorker(req, reply, env);
+  };
+
+  app.all(
+    "/oauth/register",
+    {
+      bodyLimit: 64 * 1024,
+      preHandler: oauthRateLimitPreHandler(
+        oauthRegistrationBurstLimiter,
+        oauthRegistrationHourlyLimiter
+      ),
+    },
+    forwardToWorker
+  );
+  app.all(
+    "/oauth/authorize",
+    {
+      bodyLimit: 64 * 1024,
+      preHandler: failedAuthorizationRateLimitPreHandler,
+    },
+    forwardToWorker
+  );
+  app.all(
+    "/oauth/token",
+    {
+      bodyLimit: 64 * 1024,
+      preHandler: oauthRateLimitPreHandler(oauthTokenLimiter),
+    },
+    forwardToWorker
+  );
+  app.all("/mcp", { bodyLimit: 1024 * 1024 }, forwardToWorker);
+  app.post(
+    "/import",
+    {
+      bodyLimit: 32 * 1024 * 1024,
+      onRequest: requireOwnerBeforeBody,
+    },
+    forwardToWorker
+  );
 
   app.all("/*", async (req, reply) => {
     if (req.method === "GET" || req.method === "HEAD") {

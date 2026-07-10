@@ -23,7 +23,7 @@ describe("telemetry analytics helpers", () => {
       })
     ).toEqual({
       telemetryEnabled: false,
-      contentLogging: "preview",
+      contentLogging: "metadata",
       previewMaxChars: 5000,
       retentionDays: 1,
       storeModelResponses: true,

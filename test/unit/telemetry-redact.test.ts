@@ -5,6 +5,7 @@ import {
   routeToOperation,
   shouldSuppressRequestBodyTelemetry,
 } from "../../src/telemetry/redact";
+import { DEFAULT_TELEMETRY_CONFIG } from "../../src/telemetry/types";
 
 describe("telemetry redact", () => {
   it("redacts bearer and sk- keys", () => {
@@ -35,6 +36,20 @@ describe("telemetry redact", () => {
     expect(shouldSuppressRequestBodyTelemetry("/oauth/register")).toBe(true);
     expect(shouldSuppressRequestBodyTelemetry("/mcp")).toBe(true);
     expect(shouldSuppressRequestBodyTelemetry("/mcp/session")).toBe(true);
-    expect(shouldSuppressRequestBodyTelemetry("/capture")).toBe(false);
+    expect(shouldSuppressRequestBodyTelemetry("/settings/models")).toBe(true);
+    expect(shouldSuppressRequestBodyTelemetry("/settings/models/test")).toBe(true);
+    expect(shouldSuppressRequestBodyTelemetry("/settings/oauth/clients")).toBe(true);
+    expect(shouldSuppressRequestBodyTelemetry("/import")).toBe(true);
+    expect(shouldSuppressRequestBodyTelemetry("/capture")).toBe(true);
+    expect(shouldSuppressRequestBodyTelemetry("/append")).toBe(true);
+    expect(shouldSuppressRequestBodyTelemetry("/update")).toBe(true);
+    expect(shouldSuppressRequestBodyTelemetry("/chat")).toBe(true);
+    expect(shouldSuppressRequestBodyTelemetry("/count")).toBe(false);
+  });
+
+  it("defaults personal telemetry to metadata-only with shorter retention", () => {
+    expect(DEFAULT_TELEMETRY_CONFIG.contentLogging).toBe("metadata");
+    expect(DEFAULT_TELEMETRY_CONFIG.retentionDays).toBe(14);
+    expect(DEFAULT_TELEMETRY_CONFIG.storeModelResponses).toBe(false);
   });
 });

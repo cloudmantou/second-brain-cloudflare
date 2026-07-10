@@ -41,7 +41,7 @@
   "cloudflare": {
     "bindings": {
       "AUTH_TOKEN": {
-        "description": "Your authentication token. Use a memorable phrase (like 'coffee-lover-2026') or generate a secure token with: openssl rand -base64 32. Save it - you'll need this for AI client connections!"
+        "description": "Your private owner token. Generate a high-entropy value with: openssl rand -base64 32. Store it securely; never place it in a connector URL."
       }
     }
   }

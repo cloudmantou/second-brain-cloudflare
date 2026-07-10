@@ -1,9 +1,9 @@
 name: CI
 on:
   push:
-    branches: [main]
+    branches: [main, selfhost]
   pull_request:
-    branches: [main]
+    branches: [main, selfhost]
 
 permissions:
   contents: read
@@ -22,6 +22,8 @@ jobs:
       - run: npm ci --legacy-peer-deps
       - run: npm run typecheck
       - run: npm run test:coverage
+      - name: Build self-host Docker image
+        run: docker build -t second-brain-ci .
       - name: Post coverage comment on PR
         if: github.event_name == 'pull_request'
         uses: davelosert/vitest-coverage-report-action@v2

@@ -545,14 +545,14 @@ export function toPublicModelSettings(
       (active && active !== currentFp && !pending)
   );
 
-  // Auth-gated control plane: return full keys so the UI can show/edit them.
-  // maskSecret remains for logs / accidental unauthenticated dumps.
+  // Never return persisted credentials to a browser. The authenticated control
+  // plane exposes only presence flags; replacing a key requires a new value.
   return {
     llm: {
       provider: effective.llm.provider,
       baseURL: effective.llm.baseURL,
       model: effective.llm.model,
-      apiKey: effective.llm.apiKey || "",
+      apiKey: "",
       hasApiKey: Boolean(effective.llm.apiKey),
     },
     embedding: {
@@ -560,7 +560,7 @@ export function toPublicModelSettings(
       baseURL: effective.embedding.baseURL,
       model: effective.embedding.model,
       dimensions: effective.embedding.dimensions,
-      apiKey: effective.embedding.apiKey || "",
+      apiKey: "",
       hasApiKey: Boolean(effective.embedding.apiKey),
       supportsDimensionsParameter: effective.embedding.supportsDimensionsParameter,
     },

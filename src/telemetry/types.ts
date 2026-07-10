@@ -12,9 +12,9 @@ export interface TelemetryConfig {
 
 export const DEFAULT_TELEMETRY_CONFIG: TelemetryConfig = {
   telemetryEnabled: true,
-  contentLogging: "preview",
+  contentLogging: "metadata",
   previewMaxChars: 400,
-  retentionDays: 30,
+  retentionDays: 14,
   storeModelResponses: false,
 };
 

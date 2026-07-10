@@ -3,9 +3,25 @@
  */
 
 import type Database from "better-sqlite3";
+import { OAUTH_CLIENT_IDLE_TTL_MS } from "../oauth/constants";
+
+export const SELFHOST_OAUTH_CLIENT_IDLE_TTL_MS = OAUTH_CLIENT_IDLE_TTL_MS;
+
+export interface SqliteKVOptions {
+  oauthClientIdleTtlMs?: number;
+  now?: () => number;
+}
 
 export class SqliteKVNamespace {
-  constructor(private db: Database.Database) {
+  private readonly oauthClientIdleTtlMs: number;
+  private readonly now: () => number;
+
+  constructor(private db: Database.Database, options: SqliteKVOptions = {}) {
+    this.oauthClientIdleTtlMs = Math.max(
+      1,
+      options.oauthClientIdleTtlMs ?? SELFHOST_OAUTH_CLIENT_IDLE_TTL_MS
+    );
+    this.now = options.now ?? Date.now;
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sb_kv (
         key TEXT PRIMARY KEY,
@@ -13,6 +29,12 @@ export class SqliteKVNamespace {
         expires_at INTEGER
       );
     `);
+    this.db
+      .prepare(
+        `UPDATE sb_kv SET expires_at = ?
+         WHERE key LIKE 'client:%' AND expires_at IS NULL`
+      )
+      .run(this.now() + this.oauthClientIdleTtlMs);
   }
 
   async get(
@@ -24,8 +46,13 @@ export class SqliteKVNamespace {
       .prepare(
         `SELECT value FROM sb_kv WHERE key = ? AND (expires_at IS NULL OR expires_at > ?)`
       )
-      .get(key, Date.now()) as { value: string } | undefined;
+      .get(key, this.now()) as { value: string } | undefined;
     if (!row) return null;
+    if (key.startsWith("client:")) {
+      this.db
+        .prepare(`UPDATE sb_kv SET expires_at = ? WHERE key = ?`)
+        .run(this.now() + this.oauthClientIdleTtlMs, key);
+    }
     const type = typeof options === "string" ? options : options?.type;
     if (type === "json") {
       try {
@@ -51,8 +78,12 @@ export class SqliteKVNamespace {
     }
 
     let expiresAt: number | null = null;
-    if (options?.expirationTtl != null) {
-      expiresAt = Date.now() + options.expirationTtl * 1000;
+    if (key.startsWith("client:")) {
+      // Override the provider's longer fixed registration TTL. Self-hosted
+      // clients use the personal 30-day sliding idle window instead.
+      expiresAt = this.now() + this.oauthClientIdleTtlMs;
+    } else if (options?.expirationTtl != null) {
+      expiresAt = this.now() + options.expirationTtl * 1000;
     } else if (options?.expiration != null) {
       expiresAt = options.expiration * 1000;
     }
@@ -80,22 +111,32 @@ export class SqliteKVNamespace {
     cacheStatus: null;
   }> {
     this.purgeExpired();
-    const limit = options?.limit ?? 1000;
+    const limit = Math.min(Math.max(options?.limit ?? 1000, 1), 1000);
     const prefix = options?.prefix ?? "";
+    const cursor = options?.cursor ?? "";
     const rows = this.db
       .prepare(
         `SELECT key, expires_at FROM sb_kv
-         WHERE key LIKE ? AND (expires_at IS NULL OR expires_at > ?)
+         WHERE key LIKE ? AND key > ?
+           AND (expires_at IS NULL OR expires_at > ?)
          ORDER BY key LIMIT ?`
       )
-      .all(`${prefix}%`, Date.now(), limit) as { key: string; expires_at: number | null }[];
+      .all(`${prefix}%`, cursor, this.now(), limit + 1) as {
+        key: string;
+        expires_at: number | null;
+      }[];
+    const page = rows.slice(0, limit);
+    const listComplete = rows.length <= limit;
 
     return {
-      keys: rows.map((r) => ({
+      keys: page.map((r) => ({
         name: r.key,
         ...(r.expires_at != null ? { expiration: Math.floor(r.expires_at / 1000) } : {}),
       })),
-      list_complete: true,
+      list_complete: listComplete,
+      ...(listComplete || page.length === 0
+        ? {}
+        : { cursor: page[page.length - 1].key }),
       cacheStatus: null,
     };
   }
@@ -108,6 +149,6 @@ export class SqliteKVNamespace {
   }
 
   private purgeExpired(): void {
-    this.db.prepare(`DELETE FROM sb_kv WHERE expires_at IS NOT NULL AND expires_at <= ?`).run(Date.now());
+    this.db.prepare(`DELETE FROM sb_kv WHERE expires_at IS NOT NULL AND expires_at <= ?`).run(this.now());
   }
 }

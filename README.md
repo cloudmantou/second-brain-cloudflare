@@ -200,7 +200,14 @@ This means your authentication token does not need to be placed in the client co
 ```bash
 # Required for ChatGPT / MCP OAuth absolute URLs (no trailing slash)
 PUBLIC_URL=https://YOUR-DOMAIN
+
+# Personal-instance redirect allowlist (also used as the secure default).
+# Add only clients you actually use. Loopback origins allow any local port.
+OAUTH_ALLOWED_REDIRECT_ORIGINS=https://chatgpt.com,http://127.0.0.1,http://localhost
 ```
+
+Set `OAUTH_ALLOWED_REDIRECT_ORIGINS=*` only as an explicit, discouraged opt-out
+when a trusted MCP client requires an origin you cannot list directly.
 
 Aliases (first non-empty wins): `PUBLIC_URL` | `PUBLIC_BASE_URL` | `SITE_URL`.
 Inspect runtime config: `GET /config` (public, no secrets).
@@ -231,18 +238,38 @@ location ^~ /.well-known/oauth- {
   proxy_set_header Host $host;
   proxy_set_header X-Forwarded-Proto $scheme;
   proxy_set_header X-Forwarded-Host $host;
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 }
-location /oauth/ { proxy_pass http://127.0.0.1:8787; /* same headers */ }
-location /mcp { proxy_pass http://127.0.0.1:8787; /* same headers */ }
+location /oauth/ {
+  proxy_pass http://127.0.0.1:8787;
+  proxy_set_header Host $host;
+  proxy_set_header X-Forwarded-Proto $scheme;
+  proxy_set_header X-Forwarded-Host $host;
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+location /mcp {
+  proxy_pass http://127.0.0.1:8787;
+  proxy_set_header Host $host;
+  proxy_set_header X-Forwarded-Proto $scheme;
+  proxy_set_header X-Forwarded-Host $host;
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
 location /chat {
   proxy_pass http://127.0.0.1:8787;
   proxy_set_header Host $host;
   proxy_set_header X-Forwarded-Proto $scheme;
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
   proxy_buffering off;
   proxy_cache off;
   proxy_read_timeout 300s;
 }
 ```
+
+The self-host server rate-limits OAuth registration, authorization, and token
+requests per client IP. Its default request-body limit is 256 KiB; only `/mcp`
+(1 MiB) and authenticated `/import` (32 MiB) receive larger route-specific limits.
+Registered clients can be reviewed and revoked under **Settings → OAuth clients**;
+self-hosted clients expire after 30 days without an OAuth lookup or token refresh.
 
 The following clients support this flow:
 

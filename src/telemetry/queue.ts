@@ -18,11 +18,32 @@ import { hourBucket, TELEMETRY_HOUR_MS } from "./analytics";
 const MAX_QUEUE = 5000;
 const FLUSH_EVERY_MS = 500;
 const FLUSH_BATCH = 100;
+const RETRY_DELAYS_MS = [500, 2_000] as const;
 
-let queue: TelemetryEvent[] = [];
+interface QueuedTelemetryEvent {
+  event: TelemetryEvent;
+  failedAttempts: number;
+}
+
+export interface TelemetryQueueStats {
+  queueLength: number;
+  droppedEvents: number;
+  lastFlushError: string | null;
+  lastFlushDurationMs: number | null;
+  lastFlushAt: number | null;
+  retrying: boolean;
+}
+
+let queue: QueuedTelemetryEvent[] = [];
 let flushTimer: ReturnType<typeof setInterval> | null = null;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let dbRef: D1Database | null = null;
 let flushing = false;
+let retryNotBefore = 0;
+let droppedEvents = 0;
+let lastFlushError: string | null = null;
+let lastFlushDurationMs: number | null = null;
+let lastFlushAt: number | null = null;
 
 export function bindTelemetryDb(db: D1Database): void {
   dbRef = db;
@@ -48,27 +69,86 @@ export function enqueueTelemetry(event: TelemetryEvent): void {
   const cfg = getTelemetryConfig();
   if (!cfg.telemetryEnabled) return;
   if (queue.length >= MAX_QUEUE) {
-    queue.shift(); // drop oldest
+    queue = queue.slice(1);
+    droppedEvents += 1;
   }
-  queue.push(event);
+  queue = [...queue, { event, failedAttempts: 0 }];
   if (queue.length >= FLUSH_BATCH) {
     void flushTelemetry();
   }
 }
 
+export function getTelemetryQueueStats(now = Date.now()): TelemetryQueueStats {
+  return {
+    queueLength: queue.length,
+    droppedEvents,
+    lastFlushError,
+    lastFlushDurationMs,
+    lastFlushAt,
+    retrying: retryNotBefore > now,
+  };
+}
+
+function scheduleRetry(database: D1Database, delayMs: number): void {
+  if (retryTimer != null) clearTimeout(retryTimer);
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    void flushTelemetry(database);
+  }, delayMs);
+  if (typeof retryTimer === "object" && retryTimer && "unref" in retryTimer) {
+    (retryTimer as NodeJS.Timeout).unref?.();
+  }
+}
+
+function clearRetryTimer(): void {
+  if (retryTimer == null) return;
+  clearTimeout(retryTimer);
+  retryTimer = null;
+}
+
 export async function flushTelemetry(db?: D1Database): Promise<void> {
   const database = db ?? dbRef ?? getTelemetryStore()?.db;
-  if (!database || flushing || queue.length === 0) return;
+  const now = Date.now();
+  if (!database || flushing || queue.length === 0 || now < retryNotBefore) return;
   flushing = true;
-  const batch = queue.splice(0, FLUSH_BATCH * 5);
+  const startedAt = Date.now();
+  const batch = queue.slice(0, FLUSH_BATCH * 5);
+  queue = queue.slice(batch.length);
   try {
-    await insertTelemetryBatch(database, batch);
+    await insertTelemetryBatch(database, batch.map((item) => item.event));
+    retryNotBefore = 0;
+    clearRetryTimer();
+    lastFlushError = null;
   } catch (e) {
     console.error("[telemetry] flush failed:", e);
-    // Drop failed batch — do not re-queue forever
+    lastFlushError = String(e instanceof Error ? e.message : e).slice(0, 500);
+    const failedBatch = batch.map((item) => ({
+      ...item,
+      failedAttempts: item.failedAttempts + 1,
+    }));
+    const retryBatch = failedBatch.filter(
+      (item) => item.failedAttempts <= RETRY_DELAYS_MS.length
+    );
+    const exhausted = failedBatch.length - retryBatch.length;
+    droppedEvents += exhausted;
+    if (retryBatch.length > 0) {
+      const attempts = Math.max(...retryBatch.map((item) => item.failedAttempts));
+      const available = Math.max(0, MAX_QUEUE - retryBatch.length);
+      const retainedQueue = queue.slice(0, available);
+      droppedEvents += queue.length - retainedQueue.length;
+      queue = [...retryBatch, ...retainedQueue];
+      const delayMs = RETRY_DELAYS_MS[attempts - 1];
+      retryNotBefore = Date.now() + delayMs;
+      scheduleRetry(database, delayMs);
+    } else {
+      retryNotBefore = 0;
+      clearRetryTimer();
+    }
   } finally {
+    lastFlushAt = Date.now();
+    lastFlushDurationMs = Math.max(0, lastFlushAt - startedAt);
     flushing = false;
-    if (queue.length > 0) {
+    if (queue.length > 0 && Date.now() >= retryNotBefore) {
       // schedule another flush soon
       void Promise.resolve().then(() => flushTelemetry(database));
     }
@@ -264,7 +344,11 @@ export function logModelCall(partial: {
   const inP = previewText(partial.input, mode, cfg.previewMaxChars);
   const outP = cfg.storeModelResponses
     ? previewText(partial.output, mode, cfg.previewMaxChars)
-    : previewText(partial.output, mode === "full" ? "preview" : mode, cfg.previewMaxChars);
+    : {
+        preview: null,
+        hash: null,
+        length: partial.output?.length ?? 0,
+      };
 
   enqueueTelemetry({
     kind: "model_call",
