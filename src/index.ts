@@ -8,6 +8,17 @@ import { createMcpHandler } from "agents/mcp";
 import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
 import { z } from "zod";
 import { createEmbedding, createLLM } from "./providers";
+import {
+  applyModelSettingsPatch,
+  emptyModelSettings,
+  toPublicModelSettings,
+} from "./settings/model-settings";
+import {
+  ensureSettingsTable,
+  getEffectiveModelSettings,
+  loadStoredModelSettings,
+  saveStoredModelSettings,
+} from "./settings/store";
 
 export interface Env {
   DB: D1Database;
@@ -230,7 +241,7 @@ function loginHtml(error?: string): string {
 }
 
 async function embed(text: string, env: Env): Promise<number[]> {
-  return createEmbedding(env).embed(text);
+  return (await createEmbedding(env)).embed(text);
 }
 
 // ─── Database initialization ──────────────────────────────────────────────────
@@ -250,6 +261,9 @@ async function initializeDatabase(env: Env): Promise<void> {
     `ALTER TABLE entries ADD COLUMN contradiction_losses INTEGER DEFAULT 0`,
   ]) {
     try { await env.DB.exec(alter); } catch { /* column already exists — no-op */ }
+  }
+  try { await ensureSettingsTable(env.DB); } catch (e) {
+    console.error("Settings table init error (non-fatal):", e);
   }
 }
 
@@ -351,7 +365,7 @@ Respond with JSON only. No text outside the JSON.
 {"action":"keep_both"} OR {"action":"contradiction","conflicting_id":"<id>","reason":"<10 words max>"} OR {"action":"replace","target_id":"<id>"} OR {"action":"merge","target_id":"<id>","merged_content":"<text>"}`;
 
           try {
-            const text = await createLLM(env).chat(
+            const text = await (await createLLM(env)).chat(
               [{ role: "user", content: prompt }],
               { max_tokens: SMART_MERGE_MAX_TOKENS }
             );
@@ -397,7 +411,7 @@ Respond with JSON only. No text outside the JSON object.
 {"contradicts": false} OR {"contradicts": true, "conflicting_id": "<exact_id>", "reason": "<10 words max>"}`;
 
           try {
-            const text = await createLLM(env).chat(
+            const text = await (await createLLM(env)).chat(
               [{ role: "user", content: prompt }],
               { max_tokens: CONTRADICTION_MAX_TOKENS }
             );
@@ -618,7 +632,7 @@ function parseClassification(text: string): { importance: number; canonical: boo
 export async function classifyEntry(content: string, env: Env): Promise<{ importance: number; canonical: boolean; kind: MemoryKind | null }> {
   let text: string;
   try {
-    text = await createLLM(env).chat(
+    text = await (await createLLM(env)).chat(
       [{
         role: "user",
         content:
@@ -666,7 +680,7 @@ export async function inferQueryTags(query: string, env: Env): Promise<string[]>
   if (!knownTags.length) return [];
 
   try {
-    const text = await createLLM(env).chat(
+    const text = await (await createLLM(env)).chat(
       [{
         role: "user",
         content: `From this list of tags: ${knownTags.slice(0, 50).join(", ")}\n\nWhich tags best match this query? Reply with only a comma-separated list of matching tag names from the list, or nothing if none apply.\n\nQuery: ${query.slice(0, 300)}`,
@@ -875,7 +889,7 @@ Write a brief insight (2-4 sentences).`;
 
   let insight = "";
   try {
-    insight = await createLLM(env).chat(
+    insight = await (await createLLM(env)).chat(
       [{ role: "user", content: prompt }],
       { max_tokens: INSIGHT_MAX_TOKENS }
     );
@@ -919,7 +933,7 @@ If no genuine pattern exists across 3+ memories, respond with exactly: NONE`;
 
   try {
     const trimmed = (
-      await createLLM(env).chat(
+      await (await createLLM(env)).chat(
         [{ role: "user", content: prompt }],
         { max_tokens: PATTERN_MAX_TOKENS }
       )
@@ -958,7 +972,7 @@ State of "${tag}":`;
 
   let digest = "";
   try {
-    digest = await createLLM(env).chat(
+    digest = await (await createLLM(env)).chat(
       [{ role: "user", content: prompt }],
       { max_tokens: DIGEST_MAX_TOKENS }
     );
@@ -2172,7 +2186,7 @@ const defaultHandler = {
 
       // CF-compatible SSE (`data: {"response":...}`) so the existing dashboard parser works
       // for both Workers AI and OpenAI-compatible providers.
-      const stream = await createLLM(env).chatAsCfSse([
+      const stream = await (await createLLM(env)).chatAsCfSse([
         { role: "system", content: systemPrompt },
         { role: "user", content: userMessage },
       ]);
@@ -2279,9 +2293,118 @@ const defaultHandler = {
       return json({ processed, failed, remaining: (remaining?.count as number) ?? 0 });
     }
 
+    // ── Control plane: model settings ───────────────────────────────────────
+    // GET /settings/models — public view (keys masked) + presets + status
+    if (url.pathname === "/settings/models" && request.method === "GET") {
+      const authErr = requireAuth(request, env);
+      if (authErr) return authErr;
+
+      await ensureSettingsTable(env.DB);
+      const { effective, stored } = await getEffectiveModelSettings(env);
+      return json(
+        toPublicModelSettings(effective, {
+          hasStored: Boolean(stored),
+          hasEnvLlm: Boolean(env.LLM_BASE_URL && env.LLM_API_KEY),
+          hasEnvEmbed: Boolean(env.EMBEDDING_BASE_URL && env.EMBEDDING_API_KEY),
+        })
+      );
+    }
+
+    // PUT /settings/models — save control-plane config (runtime, no restart)
+    if (url.pathname === "/settings/models" && request.method === "PUT") {
+      const authErr = requireAuth(request, env);
+      if (authErr) return authErr;
+
+      let body: { llm?: Record<string, unknown>; embedding?: Record<string, unknown> };
+      try {
+        body = await request.json();
+      } catch {
+        return json({ ok: false, error: "Invalid JSON" }, 400);
+      }
+
+      const previous =
+        (await loadStoredModelSettings(env.DB)) ??
+        mergeFromEnvOnly(env);
+      const next = applyModelSettingsPatch(previous, body as any);
+      await saveStoredModelSettings(env.DB, next);
+
+      const { effective, stored } = await getEffectiveModelSettings(env);
+      return json({
+        ok: true,
+        settings: toPublicModelSettings(effective, {
+          hasStored: Boolean(stored),
+          hasEnvLlm: Boolean(env.LLM_BASE_URL && env.LLM_API_KEY),
+          hasEnvEmbed: Boolean(env.EMBEDDING_BASE_URL && env.EMBEDDING_API_KEY),
+        }),
+      });
+    }
+
+    // POST /settings/models/test — probe LLM or embedding with current effective config
+    if (url.pathname === "/settings/models/test" && request.method === "POST") {
+      const authErr = requireAuth(request, env);
+      if (authErr) return authErr;
+
+      let body: { target?: string };
+      try {
+        body = await request.json();
+      } catch {
+        body = {};
+      }
+      const target = body.target === "embedding" ? "embedding" : "llm";
+
+      try {
+        if (target === "embedding") {
+          const emb = await createEmbedding(env);
+          const vector = await emb.embed("second brain settings probe");
+          return json({
+            ok: true,
+            target,
+            dimensions: vector.length,
+            sample: vector.slice(0, 3),
+          });
+        }
+        const llm = await createLLM(env);
+        const reply = await llm.chat(
+          [{ role: "user", content: 'Reply with exactly the word: ok' }],
+          { max_tokens: 16, temperature: 0 }
+        );
+        return json({ ok: true, target, reply: reply.trim().slice(0, 200) });
+      } catch (e) {
+        return json(
+          { ok: false, target, error: e instanceof Error ? e.message : String(e) },
+          400
+        );
+      }
+    }
+
     return new Response("Not found", { status: 404 });
   },
 };
+
+/** Seed stored-settings shape from env when first saving from control plane. */
+function mergeFromEnvOnly(env: Env) {
+  const base = emptyModelSettings();
+  if (env.LLM_BASE_URL || env.LLM_API_KEY || env.LLM_MODEL) {
+    base.llm = {
+      provider: "custom",
+      baseURL: env.LLM_BASE_URL || "",
+      apiKey: env.LLM_API_KEY || "",
+      model: env.LLM_MODEL || "",
+    };
+  }
+  if (env.EMBEDDING_BASE_URL || env.EMBEDDING_API_KEY || env.EMBEDDING_PROVIDER === "local") {
+    base.embedding = {
+      provider: env.EMBEDDING_PROVIDER === "local" ? "local" : "custom",
+      baseURL: env.EMBEDDING_BASE_URL || "",
+      apiKey: env.EMBEDDING_API_KEY || "",
+      model: env.EMBEDDING_MODEL || "",
+      dimensions: parseInt(env.EMBEDDING_DIM || "384", 10) || 384,
+    };
+  } else if (env.SELFHOST === "1" || env.SELFHOST === "true") {
+    base.embedding.provider = "local";
+  }
+  return base;
+}
 
 // ─── Export ───────────────────────────────────────────────────────────────────
 // Wrap both handlers in OAuthProvider. It auto-serves the OAuth metadata,

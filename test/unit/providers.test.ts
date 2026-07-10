@@ -13,8 +13,8 @@ describe("createLLM / createEmbedding", () => {
     vi.unstubAllGlobals();
   });
 
-  it("uses OpenAI-compatible LLM when LLM_BASE_URL + LLM_API_KEY are set", () => {
-    const llm = createLLM({
+  it("uses OpenAI-compatible LLM when LLM_BASE_URL + LLM_API_KEY are set", async () => {
+    const llm = await createLLM({
       LLM_BASE_URL: "https://api.deepseek.com/v1",
       LLM_API_KEY: "sk-test",
       LLM_MODEL: "deepseek-chat",
@@ -23,19 +23,19 @@ describe("createLLM / createEmbedding", () => {
     expect(llm).toBeInstanceOf(OpenAICompatibleLLM);
   });
 
-  it("falls back to Workers AI when external LLM env is unset", () => {
-    const llm = createLLM({
+  it("falls back to Workers AI when external LLM env is unset", async () => {
+    const llm = await createLLM({
       AI: { run: vi.fn() } as unknown as Ai,
     });
     expect(llm).toBeInstanceOf(WorkersAILLM);
   });
 
-  it("throws when neither external LLM nor Workers AI is available", () => {
-    expect(() => createLLM({})).toThrow(/No LLM configured/);
+  it("throws when neither external LLM nor Workers AI is available", async () => {
+    await expect(createLLM({})).rejects.toThrow(/No LLM configured/);
   });
 
-  it("uses OpenAI-compatible embedding when EMBEDDING_* is set", () => {
-    const emb = createEmbedding({
+  it("uses OpenAI-compatible embedding when EMBEDDING_* is set", async () => {
+    const emb = await createEmbedding({
       EMBEDDING_BASE_URL: "https://api.openai.com/v1",
       EMBEDDING_API_KEY: "sk-test",
       EMBEDDING_MODEL: "text-embedding-3-small",
@@ -46,7 +46,7 @@ describe("createLLM / createEmbedding", () => {
 
   it("uses local hash embedding on self-host without embed API", async () => {
     const { LocalHashEmbedding } = await import("../../src/providers");
-    const emb = createEmbedding({ SELFHOST: "1" });
+    const emb = await createEmbedding({ SELFHOST: "1" });
     expect(emb).toBeInstanceOf(LocalHashEmbedding);
     const v = await emb.embed("hello world");
     expect(v).toHaveLength(384);

@@ -1,12 +1,14 @@
 /**
  * Provider factories — pick OpenAI-compatible external APIs when configured,
  * otherwise fall back to Cloudflare Workers AI bindings.
+ * Control-plane settings (DB) override env via resolveProviderEnv.
  */
 
 import type { LLMProvider } from "./llm";
 import type { EmbeddingProvider } from "./embedding";
 import { LocalHashEmbedding } from "./local-embedding";
 import { OpenAICompatibleEmbedding, OpenAICompatibleLLM } from "./openai-compatible";
+import { resolveProviderEnv } from "../settings/store";
 import {
   DEFAULT_WORKERS_EMBEDDING_MODEL,
   DEFAULT_WORKERS_LLM_MODEL,
@@ -28,6 +30,7 @@ export {
 /** Minimal env surface needed to construct providers (avoids circular Env import). */
 export interface ProviderEnv {
   AI?: Ai;
+  DB?: D1Database;
   /** When "1"/"true", allow local hash embeddings if no embed API / Workers AI. */
   SELFHOST?: string;
   LLM_BASE_URL?: string;
@@ -41,7 +44,7 @@ export interface ProviderEnv {
   EMBEDDING_DIM?: string;
 }
 
-export function createLLM(env: ProviderEnv): LLMProvider {
+function buildLLM(env: ProviderEnv): LLMProvider {
   if (env.LLM_BASE_URL && env.LLM_API_KEY) {
     return new OpenAICompatibleLLM({
       baseURL: env.LLM_BASE_URL,
@@ -53,11 +56,11 @@ export function createLLM(env: ProviderEnv): LLMProvider {
     return new WorkersAILLM(env.AI, env.LLM_MODEL || DEFAULT_WORKERS_LLM_MODEL);
   }
   throw new Error(
-    "No LLM configured: set LLM_BASE_URL + LLM_API_KEY, or bind Workers AI"
+    "No LLM configured: open Settings → Models, or set LLM_BASE_URL + LLM_API_KEY"
   );
 }
 
-export function createEmbedding(env: ProviderEnv): EmbeddingProvider {
+function buildEmbedding(env: ProviderEnv): EmbeddingProvider {
   if (env.EMBEDDING_BASE_URL && env.EMBEDDING_API_KEY) {
     return new OpenAICompatibleEmbedding({
       baseURL: env.EMBEDDING_BASE_URL,
@@ -84,6 +87,27 @@ export function createEmbedding(env: ProviderEnv): EmbeddingProvider {
   }
 
   throw new Error(
-    "No embedding configured: set EMBEDDING_BASE_URL + EMBEDDING_API_KEY, EMBEDDING_PROVIDER=local, or bind Workers AI"
+    "No embedding configured: open Settings → Models, or set EMBEDDING_* env vars"
   );
+}
+
+/** Async: merges control-plane DB settings, then builds LLM client. */
+export async function createLLM(env: ProviderEnv): Promise<LLMProvider> {
+  const resolved = await resolveProviderEnv(env);
+  return buildLLM(resolved);
+}
+
+/** Async: merges control-plane DB settings, then builds embedding client. */
+export async function createEmbedding(env: ProviderEnv): Promise<EmbeddingProvider> {
+  const resolved = await resolveProviderEnv(env);
+  return buildEmbedding(resolved);
+}
+
+/** Sync builders when env is already resolved (tests / internal). */
+export function createLLMFromResolved(env: ProviderEnv): LLMProvider {
+  return buildLLM(env);
+}
+
+export function createEmbeddingFromResolved(env: ProviderEnv): EmbeddingProvider {
+  return buildEmbedding(env);
 }

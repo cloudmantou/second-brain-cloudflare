@@ -120,6 +120,7 @@ async function main() {
         urlPath.startsWith("/update") ||
         urlPath.startsWith("/forget") ||
         urlPath.startsWith("/tags") ||
+        urlPath.startsWith("/settings") ||
         urlPath.startsWith("/.well-known");
 
       if (!isApi) {
