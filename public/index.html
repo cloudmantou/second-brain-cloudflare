@@ -1,13 +1,14 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-    <meta name="apple-mobile-web-app-title" content="Second Brain" />
+    <meta name="apple-mobile-web-app-title" content="第二大脑" />
     <meta name="theme-color" content="#F4F1EA" />
-    <title>Second Brain</title>
+    <title>第二大脑</title>
+    <script src="i18n.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link
       href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600;1,400;1,500&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&display=swap"
@@ -457,13 +458,13 @@
       }
 
       .nav-tab i {
-        font-size: 22px;
+        font-size: 20px;
         transition: transform 0.32s var(--ease-spring);
       }
 
       .nav-tab span {
         font-family: var(--font-serif);
-        font-size: 11.5px;
+        font-size: 10.5px;
         letter-spacing: 0.005em;
       }
 
@@ -1952,6 +1953,86 @@
         display: block;
       }
 
+      .key-input-wrap {
+        position: relative;
+        display: flex;
+        align-items: center;
+      }
+
+      .key-input-wrap input {
+        width: 100%;
+        padding-right: 44px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 13px;
+        letter-spacing: 0.02em;
+      }
+
+      .key-toggle {
+        position: absolute;
+        right: 6px;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 34px;
+        height: 34px;
+        border: none;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--text-tertiary);
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+      }
+
+      .key-toggle:hover {
+        background: var(--surface-2);
+        color: var(--text-secondary);
+      }
+
+      .key-toggle[aria-pressed="true"] {
+        color: var(--accent-ink);
+      }
+
+      .lang-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 10px 4px 4px;
+        margin-bottom: 6px;
+      }
+
+      .lang-row-label {
+        font-size: 13px;
+        color: var(--text-secondary);
+      }
+
+      .lang-toggle {
+        display: inline-flex;
+        gap: 4px;
+        background: var(--surface-2);
+        border-radius: var(--radius-pill);
+        padding: 3px;
+      }
+
+      .lang-toggle button {
+        border: none;
+        background: transparent;
+        color: var(--text-tertiary);
+        font-family: var(--font-sans);
+        font-size: 12px;
+        padding: 6px 10px;
+        border-radius: var(--radius-pill);
+        cursor: pointer;
+      }
+
+      .lang-toggle button.active {
+        background: var(--bg-card);
+        color: var(--text-primary);
+        box-shadow: var(--shadow-card);
+      }
+
       .models-section-label {
         font-size: 12px;
         font-weight: 600;
@@ -2140,6 +2221,10 @@
       }
 
       .models-msg {
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 9em;
+        overflow-y: auto;
         margin-top: 12px;
         font-size: 13px;
         color: var(--text-secondary);
@@ -2411,6 +2496,275 @@
         color: var(--accent-ink);
       }
 
+      /* Observatory embedded in main panel */
+      #screen-observatory {
+        overflow-y: auto;
+        padding: 0;
+        background: var(--bg);
+      }
+
+      .obs-panel {
+        padding: 14px 16px 28px;
+        max-width: 1100px;
+      }
+
+      .obs-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+
+      .obs-toolbar select,
+      .obs-toolbar button {
+        font-family: var(--font-sans);
+        font-size: 13px;
+        border-radius: var(--radius-pill);
+        border: 1px solid var(--border);
+        background: var(--bg-card);
+        color: var(--text-primary);
+        padding: 8px 12px;
+        cursor: pointer;
+      }
+
+      .obs-toolbar button.primary {
+        background: var(--accent);
+        color: var(--on-accent);
+        border-color: transparent;
+      }
+
+      .obs-status {
+        font-size: 12px;
+        color: var(--text-tertiary);
+        margin-bottom: 12px;
+      }
+
+      .obs-kpi-row {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+        margin-bottom: 14px;
+      }
+
+      @media (min-width: 900px) {
+        .obs-kpi-row {
+          grid-template-columns: repeat(4, 1fr);
+        }
+      }
+
+      .obs-kpi {
+        background: var(--bg-card);
+        border: 0.5px solid var(--border-card);
+        border-radius: var(--radius-card);
+        padding: 14px;
+        box-shadow: var(--shadow-card);
+      }
+
+      .obs-kpi .label {
+        font-size: 12px;
+        color: var(--text-secondary);
+        margin-bottom: 6px;
+      }
+
+      .obs-kpi .value {
+        font-family: var(--font-serif);
+        font-size: 24px;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+      }
+
+      .obs-kpi .hint {
+        font-size: 11px;
+        color: var(--text-tertiary);
+        margin-top: 4px;
+      }
+
+      .obs-section {
+        background: var(--bg-card);
+        border: 0.5px solid var(--border-card);
+        border-radius: var(--radius-card);
+        box-shadow: var(--shadow-card);
+        margin-bottom: 14px;
+        overflow: hidden;
+      }
+
+      .obs-section-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 12px 14px;
+        border-bottom: 0.5px solid var(--border);
+      }
+
+      .obs-section-head h2 {
+        font-size: 14px;
+        font-weight: 600;
+      }
+
+      .obs-ops {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 12px 14px 14px;
+      }
+
+      .obs-op-chip {
+        font-size: 12px;
+        padding: 6px 10px;
+        border-radius: 10px;
+        background: var(--surface-2);
+        color: var(--text-secondary);
+      }
+
+      .obs-table-wrap {
+        overflow-x: auto;
+      }
+
+      .obs-table-wrap table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12.5px;
+      }
+
+      .obs-table-wrap th,
+      .obs-table-wrap td {
+        text-align: left;
+        padding: 10px 12px;
+        border-bottom: 0.5px solid var(--border);
+        white-space: nowrap;
+      }
+
+      .obs-table-wrap th {
+        color: var(--text-secondary);
+        font-weight: 500;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+
+      .obs-table-wrap tr:hover td {
+        background: var(--accent-soft);
+        cursor: pointer;
+      }
+
+      .obs-pill {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 11px;
+        background: var(--surface-2);
+        color: var(--text-secondary);
+      }
+
+      .obs-pill.ok {
+        background: rgba(91, 138, 107, 0.15);
+        color: var(--good);
+      }
+
+      .obs-pill.err {
+        background: var(--danger-soft);
+        color: var(--danger);
+      }
+
+      .obs-mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11.5px;
+      }
+
+      .obs-preview {
+        max-width: 220px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--text-secondary);
+      }
+
+      .obs-empty {
+        padding: 24px 14px;
+        text-align: center;
+        color: var(--text-tertiary);
+        font-size: 13px;
+      }
+
+      .obs-drawer-bg {
+        position: fixed;
+        inset: 0;
+        background: rgba(38, 36, 31, 0.28);
+        z-index: 80;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.2s;
+      }
+
+      .obs-drawer-bg.open {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      .obs-drawer {
+        position: fixed;
+        top: 0;
+        right: 0;
+        width: min(420px, 100%);
+        height: 100%;
+        background: var(--bg-card);
+        z-index: 90;
+        transform: translateX(100%);
+        transition: transform 0.25s cubic-bezier(0.22, 0.61, 0.36, 1);
+        overflow: auto;
+        box-shadow: var(--shadow-float);
+        padding: 20px;
+      }
+
+      .obs-drawer.open {
+        transform: none;
+      }
+
+      .obs-drawer h3 {
+        font-family: var(--font-serif);
+        font-size: 20px;
+        margin-bottom: 4px;
+      }
+
+      .obs-drawer .close {
+        float: right;
+        border: none;
+        background: var(--surface-2);
+        border-radius: 999px;
+        padding: 6px 12px;
+        cursor: pointer;
+        color: var(--text-secondary);
+        font-size: 13px;
+      }
+
+      .obs-block {
+        margin-top: 16px;
+        padding-top: 12px;
+        border-top: 0.5px solid var(--border);
+      }
+
+      .obs-block h4 {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-tertiary);
+        margin-bottom: 8px;
+      }
+
+      .obs-block pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 12px;
+        line-height: 1.45;
+        color: var(--text-secondary);
+        background: var(--bg);
+        padding: 10px;
+        border-radius: 10px;
+      }
+
       .sb-footer {
         padding-top: 12px;
         border-top: 0.5px solid var(--border);
@@ -2571,14 +2925,14 @@
     </style>
   </head>
 
-  <body>
+  <body data-i18n-title-key="app.title">
     <div id="auth-overlay">
       <div class="auth-card">
         <div class="brain-logo">
           <i class="ti ti-brain"></i>
         </div>
-        <h1>Second Brain</h1>
-        <p>Enter your Bearer token to connect to your personal memory layer.</p>
+        <h1 data-i18n="app.title">第二大脑</h1>
+        <p data-i18n="auth.blurb">输入 Bearer 令牌，连接到你的个人记忆层。</p>
         <form
           class="field-group"
           onsubmit="
@@ -2588,8 +2942,8 @@
         >
           <input type="text" name="username" value="user" autocomplete="username" style="display: none" />
           <input type="url" id="auth-url" autocomplete="off" autocapitalize="none" />
-          <input type="password" id="auth-token" placeholder="Bearer token" autocomplete="current-password" />
-          <button id="auth-connect" type="submit">Connect</button>
+          <input type="password" id="auth-token" data-i18n-placeholder="auth.token.ph" placeholder="Bearer 令牌" autocomplete="current-password" />
+          <button id="auth-connect" type="submit" data-i18n="auth.connect">连接</button>
         </form>
         <div id="auth-error"></div>
       </div>
@@ -2602,17 +2956,18 @@
             <i class="ti ti-brain"></i>
           </div>
           <div>
-            <div class="sb-brand-name">Second Brain</div>
-            <div class="sb-brand-status" id="sb-status">always remembers</div>
+            <div class="sb-brand-name" data-i18n="app.title">第二大脑</div>
+            <div class="sb-brand-status" id="sb-status" data-i18n="status.always">始终记得</div>
           </div>
         </div>
         <nav class="sb-nav">
-          <button class="sb-tab active" id="sb-tab-recall" onclick="switchTab('recall')"><i class="ti ti-search"></i><span>Recall</span></button>
-          <button class="sb-tab" id="sb-tab-recent" onclick="switchTab('recent')"><i class="ti ti-clock"></i><span>Recent</span></button>
-          <button class="sb-tab" id="sb-tab-remember" onclick="switchTab('remember')"><i class="ti ti-plus"></i><span>Remember</span></button>
+          <button class="sb-tab" id="sb-tab-observatory" onclick="switchTab('observatory')"><i class="ti ti-chart-histogram"></i><span data-i18n="nav.observatory">观测台</span></button>
+          <button class="sb-tab active" id="sb-tab-recall" onclick="switchTab('recall')"><i class="ti ti-search"></i><span data-i18n="nav.recall">回忆</span></button>
+          <button class="sb-tab" id="sb-tab-recent" onclick="switchTab('recent')"><i class="ti ti-clock"></i><span data-i18n="nav.recent">近期</span></button>
+          <button class="sb-tab" id="sb-tab-remember" onclick="switchTab('remember')"><i class="ti ti-plus"></i><span data-i18n="nav.remember">记住</span></button>
         </nav>
         <div class="sb-footer">
-          <button class="sb-footer-btn" onclick="openMenu()"><i class="ti ti-settings"></i><span>Settings</span></button>
+          <button class="sb-footer-btn" onclick="openMenu()"><i class="ti ti-settings"></i><span data-i18n="nav.settings">设置</span></button>
         </div>
       </div>
 
@@ -2622,46 +2977,98 @@
             <i class="ti ti-brain"></i>
           </div>
           <div class="topbar-info">
-            <div class="topbar-name">Second Brain</div>
-            <div class="topbar-status" id="topbar-status">always remembers</div>
+            <div class="topbar-name" data-i18n="app.title">第二大脑</div>
+            <div class="topbar-status" id="topbar-status" data-i18n="status.always">始终记得</div>
           </div>
           <button class="topbar-menu" onclick="openMenu()"><i class="ti ti-dots"></i></button>
         </div>
 
         <div id="screens">
+          <div class="screen" id="screen-observatory">
+            <div class="obs-panel">
+              <div class="obs-toolbar">
+                <select id="obs-hours" onchange="obsRefresh()">
+                  <option value="1" data-i18n="obs.range1h">近 1 小时</option>
+                  <option value="24" selected data-i18n="obs.range24h">近 24 小时</option>
+                  <option value="72" data-i18n="obs.range3d">近 3 天</option>
+                  <option value="168" data-i18n="obs.range7d">近 7 天</option>
+                </select>
+                <select id="obs-op-filter" onchange="obsLoadLogs()">
+                  <option value="" data-i18n="obs.allOps">全部操作</option>
+                </select>
+                <label style="font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 6px">
+                  <input type="checkbox" id="obs-auto-refresh" onchange="obsToggleAuto()" />
+                  <span data-i18n="obs.autoRefresh">自动刷新</span>
+                </label>
+                <button type="button" class="primary" onclick="obsRefresh()" data-i18n="obs.refresh">刷新</button>
+              </div>
+              <p class="obs-status" id="obs-status-line" data-i18n="obs.loading">加载中…</p>
+              <div class="obs-kpi-row" id="obs-kpi-row"></div>
+              <div class="obs-section">
+                <div class="obs-section-head">
+                  <h2 data-i18n="obs.opsTitle">业务操作分布</h2>
+                </div>
+                <div class="obs-ops" id="obs-ops-row"></div>
+              </div>
+              <div class="obs-section">
+                <div class="obs-section-head">
+                  <h2 data-i18n="obs.logsTitle">最近请求</h2>
+                  <span class="sub" id="obs-logs-meta" style="font-size: 12px; color: var(--text-tertiary)"></span>
+                </div>
+                <div class="obs-table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th data-i18n="obs.colTime">时间</th>
+                        <th data-i18n="obs.colOp">操作</th>
+                        <th data-i18n="obs.colStatus">状态</th>
+                        <th data-i18n="obs.colMs">耗时</th>
+                        <th data-i18n="obs.colPreview">预览</th>
+                        <th>Trace</th>
+                      </tr>
+                    </thead>
+                    <tbody id="obs-logs-body"></tbody>
+                  </table>
+                  <div class="obs-empty" id="obs-logs-empty" style="display: none" data-i18n="obs.logsEmpty">暂无请求日志。使用记忆功能后会出现数据。</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div class="screen active" id="screen-recall">
             <div id="recall-messages">
               <div class="recall-hero" id="recall-welcome">
-                <div class="eyebrow">Recall</div>
-                <div class="hero-line">Ask me anything you've stored away &mdash; I'll find it and answer in your own words.</div>
+                <div class="eyebrow" data-i18n="recall.eyebrow">回忆</div>
+                <div class="hero-line" data-i18n="recall.hero">随便问你存过的事——我会用你自己的话找出来并回答。</div>
               </div>
             </div>
             <div class="filter-bar" style="padding-bottom: 0">
               <div class="filter-inner">
                 <i class="ti ti-tag" style="color: var(--text-tertiary); font-size: 13px; flex-shrink: 0"></i>
                 <select class="filter-field" id="tag-filter-recall" onchange="onTagChange(this.value)">
-                  <option value="">All tags</option>
+                  <option value="" data-i18n="filter.allTags">全部标签</option>
                 </select>
               </div>
             </div>
-            <div class="suggestions-row">
-              <button class="suggestion-pill" onclick="sendSuggestion('What am I working on?')">What am I working on?</button>
-              <button class="suggestion-pill" onclick="sendSuggestion('What did I decide recently?')">What did I decide recently?</button>
-              <button class="suggestion-pill" onclick="sendSuggestion('Show my tasks')">Show my tasks</button>
-              <button class="suggestion-pill" onclick="sendSuggestion('What are my goals?')">What are my goals?</button>
-              <button class="suggestion-pill" onclick="sendSuggestion('What ideas do I have?')">What ideas do I have?</button>
-              <button class="suggestion-pill" onclick="sendSuggestion('What happened last week?')">Last week</button>
-              <button class="suggestion-pill" onclick="sendSuggestion('What did I decide this month?')">This month</button>
+            <div class="suggestions-row" id="suggestions-row">
+              <button type="button" class="suggestion-pill" data-sug="sug.working" data-i18n="sug.working" onclick="sendSuggestion(t('sug.working'))">我在忙什么？</button>
+              <button type="button" class="suggestion-pill" data-sug="sug.decided" data-i18n="sug.decided" onclick="sendSuggestion(t('sug.decided'))">最近做了哪些决定？</button>
+              <button type="button" class="suggestion-pill" data-sug="sug.tasks" data-i18n="sug.tasks" onclick="sendSuggestion(t('sug.tasks'))">看看我的任务</button>
+              <button type="button" class="suggestion-pill" data-sug="sug.goals" data-i18n="sug.goals" onclick="sendSuggestion(t('sug.goals'))">我的目标是什么？</button>
+              <button type="button" class="suggestion-pill" data-sug="sug.ideas" data-i18n="sug.ideas" onclick="sendSuggestion(t('sug.ideas'))">我有哪些想法？</button>
+              <button type="button" class="suggestion-pill" data-sug="sug.week" data-i18n="sug.week" onclick="sendSuggestion(t('sug.week'))">上周</button>
+              <button type="button" class="suggestion-pill" data-sug="sug.month" data-i18n="sug.month" onclick="sendSuggestion(t('sug.month'))">本月</button>
             </div>
             <div class="input-bar">
               <div class="input-inner">
-                <button id="recall-clear-btn" class="refresh-btn" onclick="clearRecall()" style="display: none" title="Clear Chat">
+                <button id="recall-clear-btn" class="refresh-btn" onclick="clearRecall()" style="display: none" data-i18n-title="recall.clear" title="清空对话">
                   <i class="ti ti-trash"></i>
                 </button>
                 <textarea
                   class="input-field"
                   id="recall-input"
-                  placeholder="Ask your brain..."
+                  data-i18n-placeholder="recall.ph"
+                  placeholder="问问你的大脑…"
                   rows="1"
                   onkeydown="handleRecallKey(event)"
                   oninput="autoResize(this)"
@@ -2673,20 +3080,20 @@
 
           <div class="screen" id="screen-recent">
             <div id="recent-list">
-              <div class="empty-state"><i class="ti ti-clock"></i><span>Loading memories...</span></div>
+              <div class="empty-state"><i class="ti ti-clock"></i><span data-i18n="recent.loading">正在加载记忆…</span></div>
             </div>
             <div class="filter-bar">
               <div class="filter-inner">
                 <i class="ti ti-tag" style="color: var(--text-tertiary); font-size: 13px; flex-shrink: 0"></i>
                 <select class="filter-field" id="tag-filter-recent" onchange="onTagChange(this.value)">
-                  <option value="">All tags</option>
+                  <option value="" data-i18n="filter.allTags">全部标签</option>
                 </select>
                 <select class="filter-field" id="time-filter-recent" onchange="onTimeRangeChange(this.value)" style="min-width: 0">
-                  <option value="">All time</option>
-                  <option value="today">Today</option>
-                  <option value="7">Last 7 days</option>
-                  <option value="30">Last 30 days</option>
-                  <option value="month">This month</option>
+                  <option value="" data-i18n="filter.allTime">全部时间</option>
+                  <option value="today" data-i18n="filter.today">今天</option>
+                  <option value="7" data-i18n="filter.7d">近 7 天</option>
+                  <option value="30" data-i18n="filter.30d">近 30 天</option>
+                  <option value="month" data-i18n="filter.month">本月</option>
                 </select>
                 <button class="refresh-btn" id="refresh-btn" onclick="loadRecent()"><i class="ti ti-refresh"></i></button>
               </div>
@@ -2696,20 +3103,21 @@
           <div class="screen" id="screen-remember">
             <div id="remember-messages">
               <div class="recall-hero" id="remember-intro">
-                <div class="eyebrow">Remember</div>
-                <div class="hero-line">What's worth keeping? Write it down &mdash; add <span class="hashtag">#tags</span> anywhere and I'll file it.</div>
+                <div class="eyebrow" data-i18n="remember.eyebrow">记住</div>
+                <div class="hero-line" data-i18n-html="remember.hero">值得留下的写下来——任意位置加 <span class="hashtag">#标签</span>，我会帮你归档。</div>
               </div>
             </div>
             <div class="input-bar">
-              <div class="input-hint">Tip: add <span class="hint-tags">#tags</span> anywhere in your message</div>
+              <div class="input-hint" data-i18n-html="remember.hint">提示：在消息任意位置加 <span class="hint-tags">#标签</span></div>
               <div class="input-inner">
-                <button id="remember-clear-btn" class="refresh-btn" onclick="clearRemember()" style="display: none" title="Clear Chat">
+                <button id="remember-clear-btn" class="refresh-btn" onclick="clearRemember()" style="display: none" data-i18n-title="remember.clear" title="清空对话">
                   <i class="ti ti-trash"></i>
                 </button>
                 <textarea
                   class="input-field"
                   id="remember-input"
-                  placeholder="Tell your brain something..."
+                  data-i18n-placeholder="remember.ph"
+                  placeholder="告诉大脑一件事…"
                   rows="1"
                   onkeydown="handleRememberKey(event)"
                   oninput="autoResize(this)"
@@ -2721,49 +3129,50 @@
         </div>
 
         <div id="navbar">
-          <button class="nav-tab active" id="tab-recall" onclick="switchTab('recall')"><i class="ti ti-search"></i><span>Recall</span></button>
-          <button class="nav-tab" id="tab-recent" onclick="switchTab('recent')"><i class="ti ti-clock"></i><span>Recent</span></button>
-          <button class="nav-tab" id="tab-remember" onclick="switchTab('remember')"><i class="ti ti-plus"></i><span>Remember</span></button>
+          <button class="nav-tab" id="tab-observatory" onclick="switchTab('observatory')"><i class="ti ti-chart-histogram"></i><span data-i18n="nav.observatory">观测台</span></button>
+          <button class="nav-tab active" id="tab-recall" onclick="switchTab('recall')"><i class="ti ti-search"></i><span data-i18n="nav.recall">回忆</span></button>
+          <button class="nav-tab" id="tab-recent" onclick="switchTab('recent')"><i class="ti ti-clock"></i><span data-i18n="nav.recent">近期</span></button>
+          <button class="nav-tab" id="tab-remember" onclick="switchTab('remember')"><i class="ti ti-plus"></i><span data-i18n="nav.remember">记住</span></button>
         </div>
       </div>
     </div>
 
     <div id="confirm-dialog">
       <div class="confirm-sheet">
-        <h3>Forget this memory?</h3>
-        <p>This can't be undone. The memory will be removed from your brain.</p>
+        <h3 data-i18n="confirm.forgetTitle">忘记这条记忆？</h3>
+        <p data-i18n="confirm.forgetBody">此操作无法撤销，记忆将从大脑中移除。</p>
         <div class="confirm-actions">
-          <button class="btn-cancel" onclick="closeConfirm()">Cancel</button>
-          <button class="btn-delete" onclick="confirmForget()">Forget</button>
+          <button class="btn-cancel" onclick="closeConfirm()" data-i18n="confirm.cancel">取消</button>
+          <button class="btn-delete" onclick="confirmForget()" data-i18n="confirm.forget">忘记</button>
         </div>
       </div>
     </div>
 
     <div id="append-sheet">
       <div class="append-inner">
-        <h3>Add an update</h3>
+        <h3 data-i18n="append.title">追加更新</h3>
         <div class="append-context" id="append-context-preview"></div>
         <div class="append-input-wrap">
-          <textarea id="append-textarea" placeholder="What's changed or new?" rows="3"></textarea>
+          <textarea id="append-textarea" data-i18n-placeholder="append.ph" placeholder="有什么变化或新内容？" rows="3"></textarea>
         </div>
         <div class="append-actions">
-          <button class="btn-append-cancel" onclick="closeAppend()">Cancel</button>
-          <button class="btn-append-save" id="append-save-btn" onclick="saveAppend()">Update</button>
+          <button class="btn-append-cancel" onclick="closeAppend()" data-i18n="append.cancel">取消</button>
+          <button class="btn-append-save" id="append-save-btn" onclick="saveAppend()" data-i18n="append.save">更新</button>
         </div>
       </div>
     </div>
 
     <div id="edit-sheet">
       <div class="edit-inner">
-        <h3>Edit memory</h3>
+        <h3 data-i18n="edit.title">编辑记忆</h3>
         <div class="edit-existing-tags" id="edit-existing-tags"></div>
         <div class="append-input-wrap">
-          <textarea id="edit-textarea" placeholder="Edit your memory..." rows="5"></textarea>
+          <textarea id="edit-textarea" data-i18n-placeholder="edit.ph" placeholder="编辑这条记忆…" rows="5"></textarea>
         </div>
-        <div class="edit-hint">Use <span style="font-style: italic">#hashtags</span> to add new tags</div>
+        <div class="edit-hint" data-i18n-html="edit.hint">用 <span style="font-style: italic">#标签</span> 添加新标签</div>
         <div class="append-actions">
-          <button class="btn-append-cancel" onclick="closeEdit()">Cancel</button>
-          <button class="btn-append-save" id="edit-save-btn" onclick="saveEdit()">Save</button>
+          <button class="btn-append-cancel" onclick="closeEdit()" data-i18n="edit.cancel">取消</button>
+          <button class="btn-append-save" id="edit-save-btn" onclick="saveEdit()" data-i18n="edit.save">保存</button>
         </div>
       </div>
     </div>
@@ -2771,35 +3180,35 @@
     <div id="view-sheet">
       <div class="view-inner">
         <div class="view-header">
-          <h3>Memory</h3>
+          <h3 data-i18n="view.title">记忆</h3>
           <button class="btn-close-icon" onclick="closeView()"><i class="ti ti-x"></i></button>
         </div>
         <div class="view-content" id="view-content-text"></div>
         <div class="view-tags" id="view-tags-container"></div>
         <div class="view-actions">
-          <button class="btn-view-append" id="view-btn-append"><i class="ti ti-writing"></i> Append</button>
-          <button class="btn-view-edit" id="view-btn-edit"><i class="ti ti-pencil"></i> Edit</button>
-          <button class="btn-view-forget" id="view-btn-forget"><i class="ti ti-trash"></i> Forget</button>
+          <button class="btn-view-append" id="view-btn-append"><i class="ti ti-writing"></i> <span data-i18n="view.append">追加</span></button>
+          <button class="btn-view-edit" id="view-btn-edit"><i class="ti ti-pencil"></i> <span data-i18n="view.edit">编辑</span></button>
+          <button class="btn-view-forget" id="view-btn-forget"><i class="ti ti-trash"></i> <span data-i18n="view.forget">忘记</span></button>
         </div>
       </div>
     </div>
 
     <div id="menu-sheet">
       <div class="menu-inner">
-        <h3>Second Brain</h3>
+        <h3 data-i18n="menu.title">第二大脑</h3>
         <div class="stats-panel" id="stats-panel">
           <div class="stats-kpi-row">
             <div class="stats-kpi-card">
               <div class="stats-kpi-value" id="stats-count">—</div>
-              <div class="stats-kpi-label">Memories</div>
+              <div class="stats-kpi-label" data-i18n="menu.memories">记忆数</div>
             </div>
             <div class="stats-kpi-card">
               <div class="stats-kpi-value" id="stats-importance">—</div>
-              <div class="stats-kpi-label">Avg Importance</div>
+              <div class="stats-kpi-label" data-i18n="menu.avgImportance">平均重要度</div>
             </div>
           </div>
           <div class="stats-top-tags">
-            <div class="stats-top-tags-label">Most used tags</div>
+            <div class="stats-top-tags-label" data-i18n="menu.topTags">常用标签</div>
             <div class="stats-tags" id="stats-tags"></div>
           </div>
         </div>
@@ -2807,18 +3216,26 @@
         <div class="digest-section" id="vectorize-section" style="display:none"></div>
         <div class="digest-section" id="classify-section" style="display:none"></div>
         <div class="theme-row">
-          <span class="theme-row-label">Appearance</span>
+          <span class="theme-row-label" data-i18n="menu.appearance">外观</span>
           <div class="theme-toggle" id="theme-toggle">
-            <button data-theme-val="light" onclick="setTheme('light')" title="Light"><i class="ti ti-sun"></i></button>
-            <button data-theme-val="dark" onclick="setTheme('dark')" title="Dark"><i class="ti ti-moon"></i></button>
-            <button data-theme-val="auto" onclick="setTheme('auto')" title="Match system">Auto</button>
+            <button data-theme-val="light" onclick="setTheme('light')" data-i18n-title="menu.themeLight" title="浅色"><i class="ti ti-sun"></i></button>
+            <button data-theme-val="dark" onclick="setTheme('dark')" data-i18n-title="menu.themeDark" title="深色"><i class="ti ti-moon"></i></button>
+            <button data-theme-val="auto" onclick="setTheme('auto')" data-i18n-title="menu.themeAuto" title="跟随系统" data-i18n="menu.themeAutoShort">自动</button>
+          </div>
+        </div>
+        <div class="lang-row">
+          <span class="lang-row-label" data-i18n="menu.language">语言</span>
+          <div class="lang-toggle" id="lang-toggle">
+            <button type="button" data-lang-val="auto" onclick="setLang('auto')" data-i18n="menu.langAuto">跟随系统</button>
+            <button type="button" data-lang-val="zh" onclick="setLang('zh')" data-i18n="menu.langZh">中文</button>
+            <button type="button" data-lang-val="en" onclick="setLang('en')" data-i18n="menu.langEn">English</button>
           </div>
         </div>
         <button class="menu-item" onclick="openModelsSettings()">
-          <i class="ti ti-cpu"></i> 模型与 API
+          <i class="ti ti-cpu"></i> <span data-i18n="menu.models">模型与 API</span>
         </button>
-        <button class="menu-item" onclick="location.href='/observatory.html'">
-          <i class="ti ti-chart-histogram"></i> 观测台
+        <button class="menu-item" onclick="closeMenu(); switchTab('observatory')">
+          <i class="ti ti-chart-histogram"></i> <span data-i18n="menu.observatory">观测台</span>
         </button>
         <button
           class="menu-item"
@@ -2827,112 +3244,141 @@
             switchTab('recent')
           "
         >
-          <i class="ti ti-clock"></i> View all memories
+          <i class="ti ti-clock"></i> <span data-i18n="menu.viewAll">查看全部记忆</span>
         </button>
-        <button class="menu-item" onclick="exportMemories('json')"><i class="ti ti-download"></i> Export as JSON</button>
-        <button class="menu-item" onclick="exportMemories('markdown')"><i class="ti ti-markdown"></i> Export as Markdown</button>
-        <button class="menu-item" onclick="triggerImportJson()"><i class="ti ti-upload"></i> Import JSON</button>
+        <button class="menu-item" onclick="exportMemories('json')"><i class="ti ti-download"></i> <span data-i18n="menu.exportJson">导出 JSON</span></button>
+        <button class="menu-item" onclick="exportMemories('markdown')"><i class="ti ti-markdown"></i> <span data-i18n="menu.exportMd">导出 Markdown</span></button>
+        <button class="menu-item" onclick="triggerImportJson()"><i class="ti ti-upload"></i> <span data-i18n="menu.importJson">导入 JSON</span></button>
         <input type="file" id="import-json-file" accept="application/json,.json" style="display: none" onchange="handleImportJsonFile(event)" />
-        <button class="menu-item danger" onclick="logout()"><i class="ti ti-logout"></i> Disconnect</button>
+        <button class="menu-item danger" onclick="logout()"><i class="ti ti-logout"></i> <span data-i18n="menu.disconnect">断开连接</span></button>
       </div>
     </div>
 
     <div id="models-sheet" onclick="if(event.target===this)closeModelsSettings()">
       <div class="models-inner" onclick="event.stopPropagation()">
-        <h3>模型与 API</h3>
-        <p class="models-sub">
-          点选供应商后自动填入接口地址与推荐模型，一般只需填写 API Key。保存后立即生效，无需重启。
-          Key 存在本机数据库，请保护好数据库文件与登录令牌。
+        <h3 data-i18n="models.title">模型与 API</h3>
+        <p class="models-sub" data-i18n="models.sub">
+          点选供应商后自动填入接口地址与推荐模型，一般只需填写 API Key。保存后立即生效，无需重启。Key 存在本机数据库，请保护好数据库文件与登录令牌。
         </p>
         <div class="models-status" id="models-status"></div>
 
         <div class="models-tabs" role="tablist">
-          <button type="button" class="active" id="models-tab-llm" onclick="switchModelsTab('llm')">对话模型</button>
-          <button type="button" id="models-tab-emb" onclick="switchModelsTab('emb')">向量模型</button>
+          <button type="button" class="active" id="models-tab-llm" onclick="switchModelsTab('llm')" data-i18n="models.tabLlm">对话模型</button>
+          <button type="button" id="models-tab-emb" onclick="switchModelsTab('emb')" data-i18n="models.tabEmb">向量模型</button>
         </div>
 
         <!-- Chat -->
         <div class="models-panel active" id="models-panel-llm">
-          <div class="models-section-label">预设供应商</div>
+          <div class="models-section-label" data-i18n="models.presets">预设供应商</div>
           <div class="provider-grid" id="llm-provider-grid"></div>
           <input type="hidden" id="llm-provider" value="custom" />
 
           <div class="models-field">
             <div class="label-row">
-              <label for="llm-key">API Key</label>
-              <span class="label-hint" id="llm-key-hint">必填（已保存可留空）</span>
+              <label for="llm-key" data-i18n="models.apiKey">API Key</label>
+              <span class="label-hint" id="llm-key-hint" data-i18n="models.keyRequired">必填</span>
             </div>
-            <input id="llm-key" type="password" placeholder="粘贴你的 API Key" autocomplete="new-password" />
+            <div class="key-input-wrap">
+              <input id="llm-key" type="password" data-i18n-placeholder="models.keyPh" placeholder="粘贴你的 API Key" autocomplete="new-password" spellcheck="false" />
+              <button type="button" class="key-toggle" id="llm-key-toggle" data-i18n-aria="models.showKey" aria-label="显示密钥" aria-pressed="false" title="显示/隐藏" onclick="toggleKeyVisibility('llm-key')">
+                <i class="ti ti-eye"></i>
+              </button>
+            </div>
           </div>
 
           <details class="models-advanced" id="llm-advanced">
-            <summary>高级选项 · 接口地址 / 模型</summary>
+            <summary data-i18n="models.advanced">高级选项 · 接口地址 / 模型</summary>
             <div class="models-field">
-              <label for="llm-base">接口地址 (Base URL)</label>
+              <label for="llm-base" data-i18n="models.baseUrl">接口地址 (Base URL)</label>
               <input id="llm-base" type="url" placeholder="https://api.deepseek.com/v1" autocomplete="off" />
             </div>
             <div class="models-field">
-              <label for="llm-model">模型 ID</label>
+              <label for="llm-model" data-i18n="models.modelId">模型 ID</label>
               <select id="llm-model-select" style="display: none; margin-bottom: 8px" onchange="onLlmModelSelectChange()"></select>
               <input id="llm-model" type="text" placeholder="deepseek-v4-flash" autocomplete="off" />
             </div>
           </details>
 
           <div class="models-actions">
-            <button type="button" class="models-btn" id="llm-test-btn" onclick="testModelSettings('llm')">测试对话</button>
+            <button type="button" class="models-btn" id="llm-test-btn" onclick="testModelSettings('llm')" data-i18n="models.testChat">测试对话</button>
           </div>
         </div>
 
         <!-- Embedding -->
         <div class="models-panel" id="models-panel-emb">
-          <div class="models-section-label">预设供应商</div>
+          <div class="models-section-label" data-i18n="models.presets">预设供应商</div>
           <div class="provider-grid" id="emb-provider-grid"></div>
           <input type="hidden" id="emb-provider" value="custom" />
 
           <div class="models-field" id="emb-key-wrap">
             <div class="label-row">
-              <label for="emb-key">API Key</label>
-              <span class="label-hint" id="emb-key-hint">与对话可共用不同 Key</span>
+              <label for="emb-key" data-i18n="models.apiKey">API Key</label>
+              <span class="label-hint" id="emb-key-hint">可与对话不同</span>
             </div>
-            <input id="emb-key" type="password" placeholder="粘贴 Embedding API Key" autocomplete="new-password" />
+            <div class="key-input-wrap">
+              <input id="emb-key" type="password" data-i18n-placeholder="models.keyPhEmb" placeholder="粘贴 Embedding API Key" autocomplete="new-password" spellcheck="false" />
+              <button type="button" class="key-toggle" id="emb-key-toggle" data-i18n-aria="models.showKey" aria-label="显示密钥" aria-pressed="false" title="显示/隐藏" onclick="toggleKeyVisibility('emb-key')">
+                <i class="ti ti-eye"></i>
+              </button>
+            </div>
+            <button type="button" class="models-btn" id="emb-copy-llm-key-btn" style="margin-top:8px;width:100%" onclick="copyLlmKeyToEmbedding()" data-i18n="models.copyLlmKey">使用对话模型的 Key / Base</button>
           </div>
 
           <div class="models-field">
             <div class="label-row">
-              <label for="emb-dim">向量维度</label>
-              <span class="label-hint">须与索引一致 · 常用 384</span>
+              <label for="emb-dim" data-i18n="models.dim">向量维度</label>
+              <span class="label-hint" data-i18n="models.dimHint">须与索引一致 · 常用 384</span>
             </div>
             <input id="emb-dim" type="number" min="1" step="1" placeholder="384" />
           </div>
 
           <details class="models-advanced" id="emb-advanced">
-            <summary>高级选项 · 接口地址 / 模型</summary>
+            <summary data-i18n="models.advanced">高级选项 · 接口地址 / 模型</summary>
             <div class="models-field" id="emb-base-wrap">
-              <label for="emb-base">接口地址 (Base URL)</label>
+              <label for="emb-base" data-i18n="models.baseUrl">接口地址 (Base URL)</label>
               <input id="emb-base" type="url" placeholder="https://api.openai.com/v1" autocomplete="off" />
             </div>
             <div class="models-field" id="emb-model-wrap">
-              <label for="emb-model">模型 ID</label>
+              <label for="emb-model" data-i18n="models.modelId">模型 ID</label>
               <select id="emb-model-select" style="display: none; margin-bottom: 8px" onchange="onEmbModelSelectChange()"></select>
               <input id="emb-model" type="text" placeholder="text-embedding-3-small" autocomplete="off" />
             </div>
           </details>
 
           <div class="models-actions">
-            <button type="button" class="models-btn" id="emb-test-btn" onclick="testModelSettings('embedding')">测试向量</button>
+            <button type="button" class="models-btn" id="emb-test-btn" onclick="testModelSettings('embedding')" data-i18n="models.testEmb">测试向量</button>
           </div>
         </div>
 
         <div class="models-actions" style="margin-top: 18px">
-          <button type="button" class="models-btn primary" id="models-save-btn" onclick="saveModelSettings()">保存</button>
-          <button type="button" class="models-btn" onclick="closeModelsSettings()">关闭</button>
+          <button type="button" class="models-btn primary" id="models-save-btn" onclick="saveModelSettings()" data-i18n="models.save">保存</button>
+          <button type="button" class="models-btn" onclick="closeModelsSettings()" data-i18n="models.close">关闭</button>
         </div>
         <div class="models-msg" id="models-msg"></div>
       </div>
     </div>
 
+    <div class="obs-drawer-bg" id="obs-drawer-bg" onclick="obsCloseDrawer()"></div>
+    <aside class="obs-drawer" id="obs-drawer">
+      <button type="button" class="close" onclick="obsCloseDrawer()" data-i18n="obs.close">关闭</button>
+      <h3 id="obs-drawer-title">Trace</h3>
+      <div class="obs-mono" id="obs-drawer-trace" style="font-size: 12px; color: var(--text-tertiary); margin-bottom: 8px"></div>
+      <div id="obs-drawer-body"></div>
+    </aside>
+
     <script src="utils.js"></script>
     <script>
+      // Re-apply dynamic labels when language changes (status, open lists)
+      window.addEventListener('sb:langchange', () => {
+        try {
+          if (typeof updateStatus === 'function') updateStatus()
+          if (typeof loadTags === 'function') loadTags()
+          if (currentTab === 'recent' && typeof renderRecent === 'function' && allEntries) {
+            renderRecent(allEntries)
+          }
+        } catch (_) {}
+      })
+
       let WORKER_URL = '',
         AUTH_TOKEN = '',
         allEntries = []
@@ -2966,24 +3412,24 @@
         const err = document.getElementById('auth-error')
         const btn = document.getElementById('auth-connect')
         if (!url || !tok) {
-          err.textContent = 'Please fill in both fields.'
+          err.textContent = t('auth.fillBoth')
           return
         }
-        btn.textContent = 'Connecting...'
+        btn.textContent = t('auth.connecting')
         btn.disabled = true
         err.textContent = ''
         try {
           const res = await fetch(`${url}/list?n=1`, { headers: { Authorization: `Bearer ${tok}` } })
-          if (res.status === 401) throw new Error('Invalid token')
-          if (!res.ok) throw new Error(`Server error: ${res.status}`)
+          if (res.status === 401) throw new Error(t('auth.invalidToken'))
+          if (!res.ok) throw new Error(t('auth.serverError', { status: res.status }))
           localStorage.setItem('sb_url', url)
           localStorage.setItem('sb_token', tok)
           WORKER_URL = url
           AUTH_TOKEN = tok
           showApp()
         } catch (e) {
-          err.textContent = e.message || 'Could not connect.'
-          btn.textContent = 'Connect'
+          err.textContent = e.message || t('auth.connectFail')
+          btn.textContent = t('auth.connect')
           btn.disabled = false
         }
       }
@@ -2994,6 +3440,12 @@
         loadRecent()
         loadTags()
         updateStatus()
+        // Deep-link: /?tab=observatory or #observatory
+        try {
+          const q = new URLSearchParams(location.search).get('tab')
+          const hash = (location.hash || '').replace(/^#/, '')
+          if (q === 'observatory' || hash === 'observatory') switchTab('observatory')
+        } catch (_) {}
       }
 
       async function loadTags() {
@@ -3003,12 +3455,12 @@
           ;['tag-filter-recent', 'tag-filter-recall'].forEach((id) => {
             const sel = document.getElementById(id)
             if (!sel) return
-            sel.innerHTML = '<option value="">All tags</option>'
-            tags.forEach((t) => {
+            sel.innerHTML = '<option value="">' + t('filter.allTags') + '</option>'
+            tags.forEach((tagName) => {
               const opt = document.createElement('option')
-              opt.value = t
-              opt.textContent = t
-              if (t === selectedTag) opt.selected = true
+              opt.value = tagName
+              opt.textContent = tagName
+              if (tagName === selectedTag) opt.selected = true
               sel.appendChild(opt)
             })
           })
@@ -3080,20 +3532,296 @@
       function switchTab(tab) {
         currentTab = tab
         document.querySelectorAll('.screen').forEach((s) => s.classList.remove('active'))
-        document.querySelectorAll('.nav-tab, .sb-tab').forEach((t) => t.classList.remove('active'))
-        document.getElementById('screen-' + tab).classList.add('active')
-        document.getElementById('tab-' + tab).classList.add('active')
+        document.querySelectorAll('.nav-tab, .sb-tab').forEach((el) => el.classList.remove('active'))
+        const screen = document.getElementById('screen-' + tab)
+        if (screen) screen.classList.add('active')
+        const navTab = document.getElementById('tab-' + tab)
+        if (navTab) navTab.classList.add('active')
         const sbTab = document.getElementById('sb-tab-' + tab)
         if (sbTab) sbTab.classList.add('active')
         if (tab === 'recent') loadRecent()
+        if (tab === 'observatory') {
+          obsRefresh()
+        } else {
+          obsStopAuto()
+        }
       }
+
+      /* ---------- Observatory (embedded right panel) ---------- */
+      let _obsTimer = null
+      let _obsLastLogs = []
+
+      function obsEsc(s) {
+        return String(s ?? '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+      }
+
+      function obsFmtMs(ms) {
+        if (ms == null || Number.isNaN(ms)) return '—'
+        if (ms < 1000) return Math.round(ms) + 'ms'
+        return (ms / 1000).toFixed(2) + 's'
+      }
+
+      function obsFmtTime(ts) {
+        if (!ts) return '—'
+        const d = new Date(ts)
+        const locale = getLang() === 'zh' ? 'zh-CN' : 'en-US'
+        return d.toLocaleString(locale, {
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: false,
+        })
+      }
+
+      function obsFmtPct(x) {
+        if (x == null) return '—'
+        return (x * 100).toFixed(1) + '%'
+      }
+
+      async function obsApi(path) {
+        const res = await fetch(WORKER_URL + path, {
+          headers: { Authorization: 'Bearer ' + AUTH_TOKEN },
+        })
+        const text = await res.text()
+        if (!text.trim()) throw new Error(t('models.emptyResponse', { status: res.status }))
+        let data
+        try {
+          data = JSON.parse(text)
+        } catch {
+          throw new Error(t('models.notJson', { status: res.status, body: text.slice(0, 100) }))
+        }
+        if (!res.ok) throw new Error(data.error || res.statusText)
+        return data
+      }
+
+      async function obsRefresh() {
+        const hoursEl = document.getElementById('obs-hours')
+        if (!hoursEl || !AUTH_TOKEN) return
+        const hours = hoursEl.value
+        const status = document.getElementById('obs-status-line')
+        if (status) status.textContent = t('obs.refreshing')
+        try {
+          const data = await obsApi('/analytics/overview?hours=' + hours)
+          obsRenderKpi(data)
+          obsRenderOps(data.top_operations || [])
+          await obsLoadLogs()
+          if (status) {
+            status.textContent = t('obs.updated', {
+              hours,
+              time: new Date().toLocaleTimeString(getLang() === 'zh' ? 'zh-CN' : 'en-US'),
+            })
+          }
+        } catch (e) {
+          if (status) status.textContent = t('obs.error') + ': ' + (e.message || e)
+        }
+      }
+
+      function obsRenderKpi(data) {
+        const r = data.requests || {}
+        const m = data.models || {}
+        const mem = data.memories || {}
+        const cards = [
+          {
+            label: t('obs.kpiRequests'),
+            value: r.count ?? 0,
+            hint: t('obs.kpiErrors', { n: r.errors ?? 0 }),
+          },
+          {
+            label: t('obs.kpiSuccess'),
+            value: obsFmtPct(r.success_rate),
+            hint: t('obs.kpiAvg', { ms: obsFmtMs(r.avg_ms) }),
+          },
+          {
+            label: t('obs.kpiMaxLatency'),
+            value: obsFmtMs(r.max_ms),
+            hint: t('obs.kpiPeak'),
+          },
+          {
+            label: t('obs.kpiModels'),
+            value: m.count ?? 0,
+            hint: t('obs.kpiTokens', { tokens: m.tokens ?? 0, errors: m.errors ?? 0 }),
+          },
+        ]
+        document.getElementById('obs-kpi-row').innerHTML = cards
+          .map(
+            (c) =>
+              `<div class="obs-kpi"><div class="label">${obsEsc(c.label)}</div>` +
+              `<div class="value">${obsEsc(c.value)}</div>` +
+              `<div class="hint">${obsEsc(c.hint)}</div></div>`
+          )
+          .join('')
+        const meta = document.getElementById('obs-logs-meta')
+        if (meta) {
+          meta.textContent = t('obs.memMeta', {
+            created: mem.created ?? 0,
+            recalled: mem.recalled ?? 0,
+          })
+        }
+      }
+
+      function obsRenderOps(ops) {
+        const el = document.getElementById('obs-ops-row')
+        const filter = document.getElementById('obs-op-filter')
+        if (!el || !filter) return
+        const current = filter.value
+        const names = ops.map((o) => o.operation)
+        filter.innerHTML = '<option value="">' + t('obs.allOps') + '</option>'
+        names.forEach((n) => {
+          const opt = document.createElement('option')
+          opt.value = n
+          opt.textContent = n
+          if (n === current) opt.selected = true
+          filter.appendChild(opt)
+        })
+        if (!ops.length) {
+          el.innerHTML = '<span class="obs-empty" style="padding:8px">' + t('obs.opsEmpty') + '</span>'
+          return
+        }
+        el.innerHTML = ops
+          .map(
+            (o) =>
+              `<span class="obs-op-chip"><strong>${obsEsc(o.operation)}</strong> · ${obsEsc(o.n)} · ${obsEsc(obsFmtMs(o.avg_ms))}</span>`
+          )
+          .join('')
+      }
+
+      async function obsLoadLogs() {
+        const filter = document.getElementById('obs-op-filter')
+        const op = filter ? filter.value : ''
+        let path = '/analytics/logs?limit=80'
+        if (op) path += '&operation=' + encodeURIComponent(op)
+        try {
+          const data = await obsApi(path)
+          _obsLastLogs = data.logs || []
+          obsRenderLogs(_obsLastLogs)
+        } catch (e) {
+          document.getElementById('obs-logs-body').innerHTML = ''
+          const empty = document.getElementById('obs-logs-empty')
+          empty.style.display = 'block'
+          empty.textContent = t('obs.logsFail') + ': ' + (e.message || e)
+        }
+      }
+
+      function obsRenderLogs(logs) {
+        const body = document.getElementById('obs-logs-body')
+        const empty = document.getElementById('obs-logs-empty')
+        if (!logs.length) {
+          body.innerHTML = ''
+          empty.style.display = 'block'
+          empty.textContent = t('obs.logsEmpty')
+          return
+        }
+        empty.style.display = 'none'
+        body.innerHTML = logs
+          .map((row) => {
+            const ok = row.success === 1 || row.success === true
+            const tid = String(row.trace_id || '')
+            return (
+              `<tr onclick="obsOpenTrace('${obsEsc(tid)}')">` +
+              `<td>${obsEsc(obsFmtTime(row.started_at))}</td>` +
+              `<td><span class="obs-pill">${obsEsc(row.operation)}</span></td>` +
+              `<td><span class="obs-pill ${ok ? 'ok' : 'err'}">${ok ? t('obs.ok') : t('obs.fail') + ' ' + obsEsc(row.status_code)}</span></td>` +
+              `<td>${obsEsc(obsFmtMs(row.duration_ms))}</td>` +
+              `<td class="obs-preview" title="${obsEsc(row.content_preview || '')}">${obsEsc(row.content_preview || '—')}</td>` +
+              `<td class="obs-mono">${obsEsc(tid.slice(0, 10))}</td>` +
+              `</tr>`
+            )
+          })
+          .join('')
+      }
+
+      async function obsOpenTrace(traceId) {
+        if (!traceId || traceId === 'no-trace') return
+        document.getElementById('obs-drawer-bg').classList.add('open')
+        document.getElementById('obs-drawer').classList.add('open')
+        document.getElementById('obs-drawer-title').textContent = t('obs.traceTitle')
+        document.getElementById('obs-drawer-trace').textContent = traceId
+        document.getElementById('obs-drawer-body').innerHTML =
+          '<p class="obs-empty">' + t('obs.loading') + '</p>'
+        try {
+          const data = await obsApi('/analytics/traces/' + encodeURIComponent(traceId))
+          const reqs = data.requests || []
+          const models = data.model_calls || []
+          const events = data.memory_events || []
+          let html = ''
+          html += `<div class="obs-block"><h4>${t('obs.httpReqs')} (${reqs.length})</h4>`
+          if (!reqs.length) html += '<p class="obs-empty" style="padding:8px">—</p>'
+          else
+            html += reqs
+              .map(
+                (r) =>
+                  `<pre>${obsEsc(r.method)} ${obsEsc(r.route)}\n${obsEsc(r.operation)} · ${obsEsc(obsFmtMs(r.duration_ms))} · HTTP ${obsEsc(r.status_code)}\n${obsEsc(r.content_preview || '')}</pre>`
+              )
+              .join('')
+          html += '</div>'
+          html += `<div class="obs-block"><h4>${t('obs.modelCalls')} (${models.length})</h4>`
+          if (!models.length) html += '<p class="obs-empty" style="padding:8px">—</p>'
+          else
+            html += models
+              .map(
+                (m) =>
+                  `<pre>${obsEsc(m.call_type)} · ${obsEsc(m.model)}\n${obsEsc(m.status)} · ${obsEsc(obsFmtMs(m.duration_ms))} · tokens ${obsEsc(m.total_tokens ?? '—')}\nIN: ${obsEsc(m.input_preview || '—')}\nOUT: ${obsEsc(m.output_preview || '—')}${m.error_message ? '\nERR: ' + obsEsc(m.error_message) : ''}</pre>`
+              )
+              .join('')
+          html += '</div>'
+          html += `<div class="obs-block"><h4>${t('obs.memEvents')} (${events.length})</h4>`
+          if (!events.length) html += '<p class="obs-empty" style="padding:8px">—</p>'
+          else
+            html += events
+              .map(
+                (e) =>
+                  `<pre>${obsEsc(e.event_type)} · ${obsEsc(e.memory_id)}\n${obsEsc(e.metadata_json || '{}')}</pre>`
+              )
+              .join('')
+          html += '</div>'
+          document.getElementById('obs-drawer-body').innerHTML = html
+        } catch (e) {
+          document.getElementById('obs-drawer-body').innerHTML =
+            '<p class="obs-empty">' + t('obs.error') + ': ' + obsEsc(e.message) + '</p>'
+        }
+      }
+
+      function obsCloseDrawer() {
+        document.getElementById('obs-drawer-bg').classList.remove('open')
+        document.getElementById('obs-drawer').classList.remove('open')
+      }
+
+      function obsStopAuto() {
+        if (_obsTimer) {
+          clearInterval(_obsTimer)
+          _obsTimer = null
+        }
+        const cb = document.getElementById('obs-auto-refresh')
+        if (cb) cb.checked = false
+      }
+
+      function obsToggleAuto() {
+        if (_obsTimer) {
+          clearInterval(_obsTimer)
+          _obsTimer = null
+        }
+        if (document.getElementById('obs-auto-refresh')?.checked) {
+          _obsTimer = setInterval(obsRefresh, 15000)
+        }
+      }
+
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') obsCloseDrawer()
+      })
 
       async function updateStatus() {
         try {
           const res = await fetch(`${WORKER_URL}/count`, { headers: { Authorization: `Bearer ${AUTH_TOKEN}` } })
           const data = await res.json()
           currentCount = data.count ?? 0
-          const text = currentCount === 0 ? 'always remembers' : `${currentCount} memor${currentCount === 1 ? 'y' : 'ies'} stored`
+          const text =
+            currentCount === 0 ? t('status.always') : t('status.count', { n: currentCount })
           document.getElementById('topbar-status').textContent = text
           const sb = document.getElementById('sb-status')
           if (sb) sb.textContent = text
@@ -3162,7 +3890,7 @@
           if (!recallRes.ok || !data.ok) throw new Error(data.error || 'recall failed')
           loadingEl.remove()
           if (!data.results || !data.results.length) {
-            appendBrainBubble(msgs, "I couldn't find anything matching that. Try different words, or check Recent.", 'recall-sys')
+            appendBrainBubble(msgs, t('recall.empty'), 'recall-sys')
           } else {
             // REST scores are already 0–100 (one decimal); map directly rather than via
             // normalizeEntry, whose 0–1 rescale heuristic would turn a 0.8% match into 80%
@@ -3223,8 +3951,12 @@
             // 2. Sources toggle
             const sourcesToggle = document.createElement('div')
             sourcesToggle.className = 'sources-toggle'
+            const srcLabel =
+              entries.length === 1
+                ? t('recall.sourcesOne', { n: entries.length })
+                : t('recall.sourcesMany', { n: entries.length })
             sourcesToggle.innerHTML = `<button onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'flex' : 'none'">
-            <i class="ti ti-files"></i> ${entries.length} source${entries.length === 1 ? '' : 's'}
+            <i class="ti ti-files"></i> ${srcLabel}
           </button>
           <div class="brain-cards-wrapper" style="display:none"></div>`
             entries.forEach((e) => sourcesToggle.querySelector('.brain-cards-wrapper').appendChild(makeRecallCard(e)))
@@ -3233,7 +3965,7 @@
           }
         } catch {
           loadingEl.remove()
-          appendBrainBubble(msgs, 'Something went wrong. Check your connection and try again.', 'recall-sys')
+          appendBrainBubble(msgs, t('recall.error'), 'recall-sys')
         }
         msgs.scrollTop = msgs.scrollHeight
       }
@@ -3250,13 +3982,13 @@
     </div>
     <div class="card-content" style="cursor: pointer;">${escHtml(entry.content)}</div>
     <div class="card-footer">
-      <div class="card-tags">${entry.tags.map((t) => `<span class="tag-chip${t === 'synthesized' ? ' tag-chip--synthesized' : ''}">${escHtml(t)}</span>`).join('')}</div>
+      <div class="card-tags">${entry.tags.map((tag) => `<span class="tag-chip${tag === 'synthesized' ? ' tag-chip--synthesized' : ''}">${escHtml(tag)}</span>`).join('')}</div>
       <div class="card-actions">
         ${
           entry.id
-            ? `<button class="card-action-btn" onclick="openAppend('${escAttr(entry.id)}', '${escAttr(entry.content.slice(0, 80))}')"><i class="ti ti-writing"></i> Append</button>
-             <button class="card-action-btn" onclick="openConfirm('${escAttr(entry.id)}', this)"><i class="ti ti-x"></i> Forget</button>`
-            : `<button class="card-action-btn" onclick="openAppendFromContent('${escAttr(entry.content)}')"><i class="ti ti-writing"></i> Append</button>`
+            ? `<button class="card-action-btn" onclick="openAppend('${escAttr(entry.id)}', '${escAttr(entry.content.slice(0, 80))}')"><i class="ti ti-writing"></i> ${t('card.append')}</button>
+             <button class="card-action-btn" onclick="openConfirm('${escAttr(entry.id)}', this)"><i class="ti ti-x"></i> ${t('card.forget')}</button>`
+            : `<button class="card-action-btn" onclick="openAppendFromContent('${escAttr(entry.content)}')"><i class="ti ti-writing"></i> ${t('card.append')}</button>`
         }
       </div>
     </div>`
@@ -3268,14 +4000,14 @@
         const list = document.getElementById('recent-list')
         const btn = document.getElementById('refresh-btn')
         btn.classList.add('spinning')
-        list.innerHTML = `<div class="empty-state"><i class="ti ti-clock"></i><span>Loading...</span></div>`
+        list.innerHTML = `<div class="empty-state"><i class="ti ti-clock"></i><span>${t('recent.loadingShort')}</span></div>`
         try {
           allEntries = await apiList(50)
           renderRecent(allEntries)
           updateStatus()
           loadTags()
         } catch {
-          list.innerHTML = `<div class="empty-state"><i class="ti ti-wifi-off"></i><span>Could not load memories.</span></div>`
+          list.innerHTML = `<div class="empty-state"><i class="ti ti-wifi-off"></i><span>${t('recent.fail')}</span></div>`
         }
         btn.classList.remove('spinning')
       }
@@ -3300,7 +4032,7 @@
       function renderRecent(entries) {
         const list = document.getElementById('recent-list')
         if (!entries.length) {
-          list.innerHTML = `<div class="empty-state"><i class="ti ti-brain"></i><span>No memories yet.<br>Use Remember to add some.</span></div>`
+          list.innerHTML = `<div class="empty-state"><i class="ti ti-brain"></i><span>${t('recent.empty')}</span></div>`
           return
         }
         const groups = {},
@@ -3313,9 +4045,9 @@
             ds = toDateStr(d)
           let label
           if (ds === today) {
-            label = 'Today'
+            label = t('recent.today')
           } else if (ds === yesterday) {
-            label = 'Yesterday'
+            label = t('recent.yesterday')
           } else if (entry.created_at >= sevenDaysAgo) {
             label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
           } else {
@@ -3357,10 +4089,10 @@
         const vec = vectorized ? 'on' : (pending ? 'pending' : 'off')
 
         const vecChip = vec === 'on'
-          ? `<span class="tag-chip vec-chip vec-chip--on" title="Vectorized — searchable via recall"><i class="ti ti-circle-check"></i></span>`
+          ? `<span class="tag-chip vec-chip vec-chip--on" title="${t('card.vecOn')}"><i class="ti ti-circle-check"></i></span>`
           : vec === 'pending'
-          ? `<span class="tag-chip vec-chip vec-chip--pending" title="Vectorizing… (just captured)"><i class="ti ti-clock"></i></span>`
-          : `<span class="tag-chip vec-chip vec-chip--off" title="Not vectorized — won't appear in recall">Not indexed</span>`
+          ? `<span class="tag-chip vec-chip vec-chip--pending" title="${t('card.vecPending')}"><i class="ti ti-clock"></i></span>`
+          : `<span class="tag-chip vec-chip vec-chip--off" title="${t('card.vecOff')}">${t('card.notIndexed')}</span>`
 
         const card = document.createElement('div')
         card.className = 'memory-card' + (isSynthesized ? ' card--synthesized' : '') + (isRolledUp ? ' card--rolled-up' : '')
@@ -3368,11 +4100,11 @@
         card.innerHTML = `
 <div class="card-content" style="cursor: pointer;">${escHtml(entry.content)}</div>
 <div class="card-footer">
-  <div class="card-tags">${tags.map((t) => `<span class="tag-chip${t === 'synthesized' ? ' tag-chip--synthesized' : ''}">${escHtml(t)}</span>`).join('')}${vecChip}</div>
+  <div class="card-tags">${tags.map((tag) => `<span class="tag-chip${tag === 'synthesized' ? ' tag-chip--synthesized' : ''}">${escHtml(tag)}</span>`).join('')}${vecChip}</div>
   <div class="card-actions">
-    <button class="card-action-btn" onclick="openAppend('${escAttr(entry.id)}', '${escAttr(entry.content.slice(0, 80))}')"><i class="ti ti-writing"></i> Append</button>
-    <button class="card-action-btn edit-btn"><i class="ti ti-pencil"></i> Edit</button>
-    <button class="card-action-btn" onclick="openConfirm('${escAttr(entry.id)}', this)"><i class="ti ti-x"></i> Forget</button>
+    <button class="card-action-btn" onclick="openAppend('${escAttr(entry.id)}', '${escAttr(entry.content.slice(0, 80))}')"><i class="ti ti-writing"></i> ${t('card.append')}</button>
+    <button class="card-action-btn edit-btn"><i class="ti ti-pencil"></i> ${t('card.edit')}</button>
+    <button class="card-action-btn" onclick="openConfirm('${escAttr(entry.id)}', this)"><i class="ti ti-x"></i> ${t('card.forget')}</button>
   </div>
 </div>`
         card.querySelector('.card-content').onclick = () => openView({ id: entry.id, content: entry.content, tags }, card)
@@ -3412,13 +4144,13 @@
           const result = await apiCapture(content || raw, tags, 'web-ui')
           loadingEl.remove()
           if (result.duplicate) {
-            appendBrainBubble(msgs, 'Already kept \u2014 I have something very similar, so I skipped the duplicate.', 'sys-note')
+            appendBrainBubble(msgs, t('remember.dup'), 'sys-note')
           } else {
-            appendBrainBubble(msgs, "Kept. I'll remember that.", 'sys-note')
+            appendBrainBubble(msgs, t('remember.kept'), 'sys-note')
             if (tags.length) {
               const confirmEl = document.createElement('div')
               confirmEl.className = 'confirm-block'
-              confirmEl.innerHTML = `<div class="confirm-line"><i class="ti ti-circle-check"></i> Tagged as:</div><div class="confirm-tags">${tags.map((t) => `<span class="confirm-tag">${escHtml(t)}</span>`).join('')}</div>`
+              confirmEl.innerHTML = `<div class="confirm-line"><i class="ti ti-circle-check"></i> ${t('remember.tagged')}</div><div class="confirm-tags">${tags.map((tag) => `<span class="confirm-tag">${escHtml(tag)}</span>`).join('')}</div>`
               msgs.appendChild(confirmEl)
             }
             updateStatus()
@@ -3426,7 +4158,7 @@
           document.getElementById('remember-clear-btn').style.display = 'flex'
         } catch {
           loadingEl.remove()
-          appendBrainBubble(msgs, 'Something went wrong. Try again.', 'sys-note')
+          appendBrainBubble(msgs, t('remember.error'), 'sys-note')
         }
         msgs.scrollTop = msgs.scrollHeight
       }
@@ -3451,7 +4183,7 @@
         if (!addition || !pendingAppendId) return
         const btn = document.getElementById('append-save-btn')
         btn.disabled = true
-        btn.textContent = 'Saving...'
+        btn.textContent = t('append.saving')
         try {
           await apiMcp('append', { id: pendingAppendId, addition })
           closeAppend()
@@ -3459,7 +4191,7 @@
           updateStatus()
         } catch (e) {
           btn.disabled = false
-          btn.textContent = 'Update'
+          btn.textContent = t('append.save')
           alert('Append failed: ' + e.message)
         }
       }
@@ -3488,19 +4220,19 @@
         if (!newContent || !pendingEditId) return
         const btn = document.getElementById('edit-save-btn')
         btn.disabled = true
-        btn.textContent = 'Saving...'
+        btn.textContent = t('append.saving')
         try {
           const res = await fetch(`${WORKER_URL}/update`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AUTH_TOKEN}` },
             body: JSON.stringify({ id: pendingEditId, content: newContent }),
           })
-          if (!res.ok) throw new Error(`Server error: ${res.status}`)
+          if (!res.ok) throw new Error(t('auth.serverError', { status: res.status }))
           closeEdit()
           loadRecent()
         } catch (e) {
           btn.disabled = false
-          btn.textContent = 'Save'
+          btn.textContent = t('edit.save')
           alert('Edit failed: ' + e.message)
         }
       }
@@ -3522,7 +4254,7 @@
         const btn = document.querySelector('#confirm-dialog .btn-delete')
         if (btn) {
           btn.disabled = true
-          btn.textContent = 'Forgetting...'
+          btn.textContent = t('confirm.forgetting')
         }
 
         try {
@@ -3541,7 +4273,7 @@
         } finally {
           if (btn) {
             btn.disabled = false
-            btn.textContent = 'Forget'
+            btn.textContent = t('confirm.forget')
           }
         }
       }
@@ -3564,14 +4296,14 @@
       async function readJsonResponse(res) {
         const text = await res.text()
         if (!text || !String(text).trim()) {
-          throw new Error(
-            `服务器返回空响应 (HTTP ${res.status})。请确认已 git pull origin selfhost 并重启 npm run server`
-          )
+          throw new Error(t('models.emptyResponse', { status: res.status }))
         }
         try {
           return JSON.parse(text)
         } catch {
-          throw new Error(`响应不是 JSON (HTTP ${res.status}): ${String(text).slice(0, 160)}`)
+          throw new Error(
+            t('models.notJson', { status: res.status, body: String(text).slice(0, 160) })
+          )
         }
       }
 
@@ -3580,6 +4312,58 @@
         if (!el) return
         el.textContent = text || ''
         el.className = 'models-msg' + (kind ? ' ' + kind : '')
+        if (kind === 'error' && text) {
+          try { console.error('[models]', text) } catch {}
+        }
+        // Scroll error into view so Network-tab 400 is not the only clue
+        if (kind === 'error' && el.scrollIntoView) {
+          try { el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }) } catch {}
+        }
+      }
+
+      /** Toggle password/text on an API key field + eye icon state. */
+      function toggleKeyVisibility(inputId) {
+        const input = document.getElementById(inputId)
+        const btn = document.getElementById(inputId + '-toggle')
+        if (!input) return
+        const show = input.type === 'password'
+        input.type = show ? 'text' : 'password'
+        if (btn) {
+          btn.setAttribute('aria-pressed', show ? 'true' : 'false')
+          btn.setAttribute('aria-label', show ? t('models.hideKey') : t('models.showKey'))
+          btn.title = show ? t('models.hideKey') : t('models.showKey')
+          const icon = btn.querySelector('i')
+          if (icon) icon.className = show ? 'ti ti-eye-off' : 'ti ti-eye'
+        }
+      }
+
+      function setKeyFieldVisibility(inputId, visible) {
+        const input = document.getElementById(inputId)
+        const btn = document.getElementById(inputId + '-toggle')
+        if (!input) return
+        input.type = visible ? 'text' : 'password'
+        if (btn) {
+          btn.setAttribute('aria-pressed', visible ? 'true' : 'false')
+          btn.setAttribute('aria-label', visible ? t('models.hideKey') : t('models.showKey'))
+          btn.title = visible ? t('models.hideKey') : t('models.showKey')
+          const icon = btn.querySelector('i')
+          if (icon) icon.className = visible ? 'ti ti-eye-off' : 'ti ti-eye'
+        }
+      }
+
+      /** Copy chat key + base into embedding form (same gateway key is common). */
+      function copyLlmKeyToEmbedding() {
+        const llmKey = document.getElementById('llm-key').value
+        const llmBase = document.getElementById('llm-base').value
+        if (llmKey) document.getElementById('emb-key').value = llmKey
+        if (llmBase) document.getElementById('emb-base').value = llmBase
+        setKeyFieldVisibility('emb-key', false)
+        setModelsMsg(
+          llmKey
+            ? t('models.copyOk', { andBase: llmBase ? t('models.copyAndBase') : '' })
+            : t('models.copyNoKey'),
+          llmKey ? 'ok' : 'error'
+        )
       }
 
       function switchModelsTab(tab) {
@@ -3647,29 +4431,38 @@
             // Always reset URL/model when switching cards (no leftover from previous provider)
             document.getElementById('llm-base').value = p.baseURL ?? ''
             document.getElementById('llm-model').value = p.model ?? ''
+            // Keep key when switching only if user already typed one for same session? Safer: clear on card switch
             document.getElementById('llm-key').value = ''
             document.getElementById('llm-key').placeholder = '粘贴你的 API Key'
+            setKeyFieldVisibility('llm-key', false)
+            document.getElementById('llm-key-hint').textContent = t('models.keySwitch')
           }
           fillModelSelect(document.getElementById('llm-model-select'), p.models, document.getElementById('llm-model').value)
-          const isCustom = id === 'custom' || id === 'mimo'
-          document.getElementById('llm-advanced').open = isCustom || !p.baseURL
+          document.getElementById('llm-advanced').open =
+            id === 'custom' || id === 'mimo' || !p.baseURL
         } else {
           const local = id === 'local' || id === 'local-hash' || id === 'local-hash-dev'
           ;['emb-base-wrap', 'emb-model-wrap', 'emb-key-wrap'].forEach((wid) => {
             const el = document.getElementById(wid)
             if (el) el.style.display = local ? 'none' : ''
           })
+          const copyBtn = document.getElementById('emb-copy-llm-key-btn')
+          if (copyBtn) copyBtn.style.display = local ? 'none' : ''
           if (applyDefaults) {
             document.getElementById('emb-base').value = local ? '' : p.baseURL ?? ''
             document.getElementById('emb-model').value = p.model ?? (local ? 'local-hash' : '')
             document.getElementById('emb-dim').value = p.fixedDimensions ?? p.dimensions ?? 384
             document.getElementById('emb-key').value = ''
             document.getElementById('emb-key').placeholder = local ? '' : '粘贴 Embedding API Key'
+            setKeyFieldVisibility('emb-key', false)
+            document.getElementById('emb-key-hint').textContent = local ? '' : t('models.keySwitch')
             const dimInput = document.getElementById('emb-dim')
             dimInput.readOnly = p.supportsDimensionsParameter === false || p.fixedDimensions != null
           }
           fillModelSelect(document.getElementById('emb-model-select'), p.models, document.getElementById('emb-model').value)
-          document.getElementById('emb-advanced').open = id === 'custom' || local
+          // Open advanced when base/model empty (DeepSeek emb, MiMo, custom)
+          document.getElementById('emb-advanced').open =
+            id === 'custom' || id === 'mimo' || id === 'deepseek' || local || !p.baseURL
         }
       }
 
@@ -3692,18 +4485,36 @@
           `<span class="models-pill ${ok ? 'ok' : 'warn'}">${escHtml(label)}</span>`
 
         const llmLabel = data.llm?.model
-          ? `对话：${data.llm.provider || '—'} · ${data.llm.model}`
-          : `对话：${data.status?.llm === 'unconfigured' ? '未配置' : data.status?.llm || '—'}`
+          ? t('models.statusChat', {
+              provider: data.llm.provider || '—',
+              model: data.llm.model,
+            })
+          : data.status?.llm === 'unconfigured'
+            ? t('models.statusChatUncfg')
+            : t('models.statusChat', {
+                provider: data.status?.llm || '—',
+                model: '—',
+              })
         const embLabel = data.embedding?.model
-          ? `向量：${data.embedding.provider || '—'} · ${data.embedding.model} · ${data.embedding.dimensions || '?'}维`
-          : `向量：${data.status?.embedding === 'unconfigured' ? '未配置' : data.status?.embedding || '—'}`
+          ? t('models.statusEmb', {
+              provider: data.embedding.provider || '—',
+              model: data.embedding.model,
+              dim: data.embedding.dimensions || '?',
+            })
+          : data.status?.embedding === 'unconfigured'
+            ? t('models.statusEmbUncfg')
+            : t('models.statusEmb', {
+                provider: data.status?.embedding || '—',
+                model: '—',
+                dim: '?',
+              })
 
         let html = pill(llmLabel, llmOk) + pill(embLabel, embOk)
         if (data.status?.devEmbeddingWarning) {
-          html += pill('开发用哈希向量 · 勿用于正式记忆', false)
+          html += pill(t('models.devHashWarn'), false)
         }
         if (data.status?.reindexRequired) {
-          html += pill('需重建向量索引', false)
+          html += pill(t('models.reindexRequired'), false)
         }
         box.innerHTML = html
       }
@@ -3712,7 +4523,7 @@
         closeMenu()
         document.getElementById('models-sheet').classList.add('open')
         switchModelsTab('llm')
-        setModelsMsg('加载中…')
+        setModelsMsg(t('models.loading'))
         try {
           const res = await fetch(`${WORKER_URL}/settings/models`, {
             headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
@@ -3731,20 +4542,27 @@
 
           document.getElementById('llm-base').value = data.llm?.baseURL || ''
           document.getElementById('llm-model').value = data.llm?.model || ''
-          document.getElementById('llm-key').value = ''
-          document.getElementById('llm-key').placeholder = data.llm?.hasApiKey
-            ? '已保存 · 留空保持不变'
-            : '粘贴你的 API Key'
-          document.getElementById('llm-key-hint').textContent = data.llm?.hasApiKey ? '已保存' : '必填'
+          // Show saved keys in the field (hidden by default; eye toggles plaintext)
+          const llmKey = data.llm?.apiKey || ''
+          document.getElementById('llm-key').value = llmKey
+          document.getElementById('llm-key').placeholder = llmKey
+            ? t('models.keyLoaded')
+            : t('models.keyPh')
+          document.getElementById('llm-key-hint').textContent =
+            data.llm?.hasApiKey || llmKey ? t('models.keySaved') : t('models.keyRequired')
+          setKeyFieldVisibility('llm-key', false)
 
           document.getElementById('emb-base').value = data.embedding?.baseURL || ''
           document.getElementById('emb-model').value = data.embedding?.model || ''
           document.getElementById('emb-dim').value = data.embedding?.dimensions || 384
-          document.getElementById('emb-key').value = ''
-          document.getElementById('emb-key').placeholder = data.embedding?.hasApiKey
-            ? '已保存 · 留空保持不变'
-            : '粘贴 Embedding API Key'
-          document.getElementById('emb-key-hint').textContent = data.embedding?.hasApiKey ? '已保存' : '与对话可不同'
+          const embKey = data.embedding?.apiKey || ''
+          document.getElementById('emb-key').value = embKey
+          document.getElementById('emb-key').placeholder = embKey
+            ? t('models.keyLoaded')
+            : t('models.keyPhEmb')
+          document.getElementById('emb-key-hint').textContent =
+            data.embedding?.hasApiKey || embKey ? t('models.keySaved') : t('models.keyRequired')
+          setKeyFieldVisibility('emb-key', false)
 
           selectProvider('llm', llmId, false)
           selectProvider('emb', embId, false)
@@ -3754,11 +4572,7 @@
           _loadedEmbProvider = embId
 
           renderModelsStatus(data)
-          setModelsMsg(
-            data.status?.reindexRequired
-              ? '向量配置已变更，请在保存后使用「开始重建」或设置页提示完成向量重建。'
-              : ''
-          )
+          setModelsMsg(data.status?.reindexRequired ? t('models.fpWarn') : '')
         } catch (e) {
           setModelsMsg(String(e.message || e), 'error')
         }
@@ -3769,7 +4583,7 @@
       }
 
       async function saveModelSettings() {
-        setModelsMsg('保存中…')
+        setModelsMsg(t('models.saving'))
         const saveBtn = document.getElementById('models-save-btn')
         saveBtn.disabled = true
         try {
@@ -3780,7 +4594,7 @@
             body.llm.provider !== 'none' &&
             !String(body.llm.apiKey || '').trim()
           ) {
-            throw new Error('切换对话供应商后必须重新填写 API Key')
+            throw new Error(t('models.needLlmKey'))
           }
           if (
             body.embedding.provider !== _loadedEmbProvider &&
@@ -3788,7 +4602,7 @@
             body.embedding.provider !== 'local-hash-dev' &&
             !String(body.embedding.apiKey || '').trim()
           ) {
-            throw new Error('切换向量供应商后必须重新填写 API Key')
+            throw new Error(t('models.needEmbKey'))
           }
           // Do NOT send acceptEmbeddingFingerprint — active FP only after reindex completes
           const res = await fetch(`${WORKER_URL}/settings/models`, {
@@ -3800,22 +4614,33 @@
             body: JSON.stringify(body),
           })
           const data = await readJsonResponse(res)
-          if (!res.ok || !data.ok) throw new Error(data.error || '保存失败')
-          document.getElementById('llm-key').value = ''
-          document.getElementById('emb-key').value = ''
-          document.getElementById('llm-key').placeholder = data.settings?.llm?.hasApiKey
-            ? '已保存 · 留空保持不变'
-            : '粘贴你的 API Key'
-          document.getElementById('emb-key').placeholder = data.settings?.embedding?.hasApiKey
-            ? '已保存 · 留空保持不变'
-            : '粘贴 Embedding API Key'
+          if (!res.ok || !data.ok) throw new Error(data.error || t('models.saveFail'))
+          // Re-fill keys from server response so UI stays in sync after save
+          const savedLlmKey = data.settings?.llm?.apiKey || body.llm.apiKey || ''
+          const savedEmbKey = data.settings?.embedding?.apiKey || body.embedding.apiKey || ''
+          document.getElementById('llm-key').value = savedLlmKey
+          document.getElementById('emb-key').value = savedEmbKey
+          document.getElementById('llm-key').placeholder = savedLlmKey
+            ? t('models.keyLoaded')
+            : t('models.keyPh')
+          document.getElementById('emb-key').placeholder = savedEmbKey
+            ? t('models.keyLoaded')
+            : t('models.keyPhEmb')
+          document.getElementById('llm-key-hint').textContent = savedLlmKey
+            ? t('models.keySaved')
+            : t('models.keyRequired')
+          document.getElementById('emb-key-hint').textContent = savedEmbKey
+            ? t('models.keySaved')
+            : t('models.keyRequired')
+          setKeyFieldVisibility('llm-key', false)
+          setKeyFieldVisibility('emb-key', false)
           _loadedLlmProvider = body.llm.provider
           _loadedEmbProvider = body.embedding.provider
           if (data.settings) renderModelsStatus(data.settings)
-          let msg = '已保存，新请求立即使用此配置。'
+          let msg = t('models.saved')
           if (data.warning) msg += ' ' + data.warning
           if (data.reindexRequired || data.embeddingFingerprintChanged) {
-            if (confirm((data.warning || msg) + '\n\n是否立即开始重建向量索引？')) {
+            if (confirm((data.warning || msg) + '\n\n' + t('models.reindexPrompt'))) {
               await startFullReindex()
             }
           }
@@ -3848,14 +4673,14 @@
       }
 
       async function startFullReindex() {
-        setModelsMsg('正在清空旧向量…')
+        setModelsMsg(t('models.reindexClear'))
         const r = await fetch(`${WORKER_URL}/settings/models/reindex`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
         })
         const data = await readJsonResponse(r)
-        if (!r.ok || !data.ok) throw new Error(data.error || 'reindex 失败')
-        setModelsMsg(`已重置 ${data.entriesReset || 0} 条，开始批量向量化…`)
+        if (!r.ok || !data.ok) throw new Error(data.error || t('models.reindexFail'))
+        setModelsMsg(t('models.reindexReset', { n: data.entriesReset || 0 }))
         await runVectorizeLoop({ limit: 100, includeRecent: true })
       }
 
@@ -3884,43 +4709,68 @@
           totalProcessed += processed
           totalFailed += failed
           setModelsMsg(
-            `重建向量中：本批 +${processed}，累计 ${totalProcessed}，失败 ${totalFailed}，剩余 ${remaining}`
+            t('models.reindexProgress', {
+              processed,
+              total: totalProcessed,
+              failed: totalFailed,
+              remaining,
+            })
           )
           if (processed === 0 && remaining > 0) {
             stagnant++
             if (stagnant >= 2) {
-              throw new Error(`向量化停滞（剩余 ${remaining}，连续失败）。请检查 Embedding 配置。`)
+              throw new Error(t('models.reindexStuck', { remaining }))
             }
           } else {
             stagnant = 0
           }
         }
         setModelsMsg(
-          `向量重建完成：成功 ${totalProcessed}，失败 ${totalFailed}`,
+          t('models.reindexDone', { ok: totalProcessed, failed: totalFailed }),
           totalFailed ? 'error' : 'ok'
         )
         return { totalProcessed, totalFailed }
       }
 
       async function testModelSettings(target) {
-        setModelsMsg((target === 'embedding' ? '测试向量' : '测试对话') + '中（不会保存）…')
+        setModelsMsg(target === 'embedding' ? t('models.testingEmb') : t('models.testingChat'))
         const btn = document.getElementById(target === 'embedding' ? 'emb-test-btn' : 'llm-test-btn')
         btn.disabled = true
         try {
+          const form = collectModelFormBody()
+          const side = target === 'embedding' ? form.embedding : form.llm
+          // Local preflight: base/model required. Key may be empty if already saved (server reuses stored).
+          if (target === 'llm') {
+            if (!String(side.baseURL || '').trim()) {
+              throw new Error(t('models.needBase'))
+            }
+            if (!String(side.model || '').trim()) {
+              throw new Error(t('models.needModel'))
+            }
+            if (!String(side.apiKey || '').trim()) {
+              throw new Error(t('models.needKeyTest'))
+            }
+          }
           const res = await fetch(`${WORKER_URL}/settings/models/test`, {
             method: 'POST',
             headers: {
               Authorization: `Bearer ${AUTH_TOKEN}`,
               'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ target, ...collectModelFormBody() }),
+            body: JSON.stringify({ target, ...form }),
           })
           const data = await readJsonResponse(res)
-          if (!data.ok) throw new Error(data.error || '测试失败')
+          if (!data.ok) {
+            const probe = data.probe
+              ? ` | probe: ${data.probe.baseURL || '?'} · ${data.probe.model || '?'} · hasKey=${data.probe.hasApiKey} len=${data.probe.apiKeyLen ?? '?'}`
+              : ''
+            const hint = data.hint ? ` | ${data.hint}` : ''
+            throw new Error((data.error || t('models.testFail')) + probe + hint)
+          }
           if (target === 'embedding') {
-            setModelsMsg('向量测试通过 · 维度=' + data.dimensions + ' · 尚未保存', 'ok')
+            setModelsMsg(t('models.testOkEmb', { dim: data.dimensions }), 'ok')
           } else {
-            setModelsMsg('对话测试通过 · 回复=' + JSON.stringify(data.reply) + ' · 尚未保存', 'ok')
+            setModelsMsg(t('models.testOkChat', { reply: JSON.stringify(data.reply) }), 'ok')
           }
         } catch (e) {
           setModelsMsg(String(e.message || e), 'error')
@@ -3937,8 +4787,8 @@
           document.getElementById('stats-importance').textContent = data.avg_importance != null ? data.avg_importance.toFixed(1) + ' / 10' : '—'
           const tagsEl = document.getElementById('stats-tags')
           tagsEl.innerHTML = data.top_tags?.length
-            ? data.top_tags.map((t) => `<span class="tag-chip">${escHtml(t)}</span>`).join('')
-            : '<span style="font-size:13px;color:var(--text-tertiary)">No tags yet</span>'
+            ? data.top_tags.map((tag) => `<span class="tag-chip">${escHtml(tag)}</span>`).join('')
+            : `<span style="font-size:13px;color:var(--text-tertiary)">${t('menu.noTags')}</span>`
           vectorizeGraceMs = data.vectorize_grace_ms ?? vectorizeGraceMs
           renderDigestSection(data.digest_candidates ?? [])
           renderVectorizeSection(data.unvectorized ?? 0)
@@ -3951,15 +4801,15 @@
         if (!candidates.length) { el.style.display = 'none'; return }
         el.style.display = ''
         el.innerHTML = `
-          <div class="digest-section-label">Ready to compress</div>
-          <p class="digest-note">Originals are never deleted — digest adds a summary and ranks originals lower in recall so they don't crowd results.</p>
+          <div class="digest-section-label">${t('digest.ready')}</div>
+          <p class="digest-note">${t('digest.note')}</p>
           ${candidates.map(c => `
             <div class="digest-candidate-row" id="digest-row-${escAttr(c.tag)}">
               <div class="digest-candidate-label">
                 <span>${escHtml(c.tag)}</span>
-                <span class="digest-candidate-count">${c.count} entries</span>
+                <span class="digest-candidate-count">${t('digest.entries', { n: c.count })}</span>
               </div>
-              <button class="digest-btn" onclick="runDigest('${escAttr(c.tag)}', this)">Digest →</button>
+              <button class="digest-btn" onclick="runDigest('${escAttr(c.tag)}', this)">${t('digest.btn')}</button>
             </div>
           `).join('')}
         `
@@ -3968,7 +4818,7 @@
       async function runDigest(tag, btn) {
         btn.disabled = true
         btn.classList.add('digest-btn--loading')
-        btn.innerHTML = '<i class="ti ti-loader-2"></i> Working…'
+        btn.innerHTML = '<i class="ti ti-loader-2"></i> ' + t('digest.working')
         const row = document.getElementById('digest-row-' + tag)
         try {
           const res = await fetch(`${WORKER_URL}/digest?tag=${encodeURIComponent(tag)}`, {
@@ -3977,28 +4827,28 @@
           const data = await res.json()
           if (data.synthesis) {
             btn.classList.remove('digest-btn--loading')
-            btn.innerHTML = '<i class="ti ti-check"></i> Done'
+            btn.innerHTML = '<i class="ti ti-check"></i> ' + t('digest.done')
             btn.style.color = 'var(--good)'
             setTimeout(() => {
-              row.innerHTML = `<div class="digest-result"><strong>${escHtml(tag)}</strong> — ${escHtml(data.synthesis)}<div class="digest-result-meta"><i class="ti ti-lock"></i> ${data.source_count} original memories preserved &amp; still searchable</div></div>`
+              row.innerHTML = `<div class="digest-result"><strong>${escHtml(tag)}</strong> — ${escHtml(data.synthesis)}<div class="digest-result-meta"><i class="ti ti-lock"></i> ${t('digest.preserved', { n: data.source_count })}</div></div>`
             }, 700)
           } else {
             btn.classList.remove('digest-btn--loading')
-            btn.innerHTML = '<i class="ti ti-alert-triangle"></i> ' + escHtml(data.error ?? 'Could not create digest')
+            btn.innerHTML = '<i class="ti ti-alert-triangle"></i> ' + escHtml(data.error ?? t('digest.fail'))
             btn.style.color = 'var(--danger)'
             setTimeout(() => {
               btn.disabled = false
-              btn.innerHTML = 'Digest →'
+              btn.innerHTML = t('digest.btn')
               btn.style.color = ''
             }, 3000)
           }
         } catch {
           btn.classList.remove('digest-btn--loading')
-          btn.innerHTML = '<i class="ti ti-wifi-off"></i> Request failed'
+          btn.innerHTML = '<i class="ti ti-wifi-off"></i> ' + t('digest.reqFail')
           btn.style.color = 'var(--danger)'
           setTimeout(() => {
             btn.disabled = false
-            btn.innerHTML = 'Digest →'
+            btn.innerHTML = t('digest.btn')
             btn.style.color = ''
           }, 3000)
         }
@@ -4009,30 +4859,30 @@
         if (!count) { el.style.display = 'none'; return }
         el.style.display = ''
         el.innerHTML = `
-          <div class="digest-section-label">Not indexed</div>
-          <p class="digest-note">${count} ${count === 1 ? 'memory' : 'memories'} failed to embed and won't appear in recall.</p>
-          <button class="digest-btn" id="vectorize-btn" onclick="runVectorize(this)">Vectorize now →</button>
+          <div class="digest-section-label">${t('vectorize.title')}</div>
+          <p class="digest-note">${count === 1 ? t('vectorize.noteOne', { n: count }) : t('vectorize.note', { n: count })}</p>
+          <button class="digest-btn" id="vectorize-btn" onclick="runVectorize(this)">${t('vectorize.btn')}</button>
         `
       }
 
       async function runVectorize(btn) {
         btn.disabled = true
         btn.classList.add('digest-btn--loading')
-        btn.innerHTML = '<i class="ti ti-loader-2"></i> Working…'
+        btn.innerHTML = '<i class="ti ti-loader-2"></i> ' + t('vectorize.working')
         try {
           const r = await runVectorizeLoop({ limit: 100, includeRecent: true })
           btn.classList.remove('digest-btn--loading')
-          btn.innerHTML = `<i class="ti ti-check"></i> Done — ${r.totalProcessed} re-indexed`
+          btn.innerHTML = `<i class="ti ti-check"></i> ${t('vectorize.done', { n: r.totalProcessed })}`
           btn.style.color = 'var(--good)'
           await loadMenuStats()
           loadRecent()
         } catch {
           btn.classList.remove('digest-btn--loading')
-          btn.innerHTML = '<i class="ti ti-wifi-off"></i> Request failed'
+          btn.innerHTML = '<i class="ti ti-wifi-off"></i> ' + t('vectorize.reqFail')
           btn.style.color = 'var(--danger)'
           setTimeout(() => {
             btn.disabled = false
-            btn.innerHTML = 'Vectorize now →'
+            btn.innerHTML = t('vectorize.btn')
             btn.style.color = ''
           }, 3000)
         }
@@ -4043,16 +4893,16 @@
         if (!count) { el.style.display = 'none'; return }
         el.style.display = ''
         el.innerHTML = `
-          <div class="digest-section-label">Not classified</div>
-          <p class="digest-note">${count} ${count === 1 ? 'memory has' : 'memories have'} no kind or status tag yet (captured before classification existed).</p>
-          <button class="digest-btn" id="classify-btn" onclick="runClassify(this)">Classify now →</button>
+          <div class="digest-section-label">${t('classify.title')}</div>
+          <p class="digest-note">${count === 1 ? t('classify.noteOne', { n: count }) : t('classify.note', { n: count })}</p>
+          <button class="digest-btn" id="classify-btn" onclick="runClassify(this)">${t('classify.btn')}</button>
         `
       }
 
       async function runClassify(btn) {
         btn.disabled = true
         btn.classList.add('digest-btn--loading')
-        btn.innerHTML = '<i class="ti ti-loader-2"></i> Working…'
+        btn.innerHTML = '<i class="ti ti-loader-2"></i> ' + t('classify.working')
         try {
           let remaining = 1
           let prevRemaining = Infinity
@@ -4062,7 +4912,7 @@
               method: 'POST',
               headers: { Authorization: `Bearer ${AUTH_TOKEN}` }
             })
-            if (!res.ok) throw new Error(`Server error: ${res.status}`)
+            if (!res.ok) throw new Error(t('auth.serverError', { status: res.status }))
             const data = await res.json()
             remaining = data.remaining ?? 0
             totalProcessed += data.processed ?? 0
@@ -4070,17 +4920,17 @@
             prevRemaining = remaining
           }
           btn.classList.remove('digest-btn--loading')
-          btn.innerHTML = `<i class="ti ti-check"></i> Done — ${totalProcessed} classified`
+          btn.innerHTML = `<i class="ti ti-check"></i> ${t('classify.done', { n: totalProcessed })}`
           btn.style.color = 'var(--good)'
           await loadMenuStats()
           loadRecent()
         } catch {
           btn.classList.remove('digest-btn--loading')
-          btn.innerHTML = '<i class="ti ti-wifi-off"></i> Request failed'
+          btn.innerHTML = '<i class="ti ti-wifi-off"></i> ' + t('classify.reqFail')
           btn.style.color = 'var(--danger)'
           setTimeout(() => {
             btn.disabled = false
-            btn.innerHTML = 'Classify now →'
+            btn.innerHTML = t('classify.btn')
             btn.style.color = ''
           }, 3000)
         }

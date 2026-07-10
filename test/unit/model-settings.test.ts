@@ -9,6 +9,7 @@ import {
   emptyModelSettings,
   maskSecret,
   mergeModelSettings,
+  normalizeApiKey,
   toPublicModelSettings,
 } from "../../src/settings/model-settings";
 import {
@@ -22,6 +23,20 @@ describe("model-settings helpers", () => {
   it("masks secrets", () => {
     expect(maskSecret("sk-abcdefghij")).toMatch(/^sk-•+ghij$/);
     expect(maskSecret("short")).toBe("••••••••");
+  });
+
+  it("normalizes pasted API keys", () => {
+    expect(normalizeApiKey("  Bearer sk-abc  ")).toBe("sk-abc");
+    expect(normalizeApiKey('"sk-quoted"')).toBe("sk-quoted");
+    expect(normalizeApiKey("sk-plain\n")).toBe("sk-plain");
+  });
+
+  it("minimax CN preset uses minimaxi.com", async () => {
+    const { LLM_PRESETS } = await import("../../src/settings/model-settings");
+    const cn = LLM_PRESETS.find((p) => p.id === "minimax");
+    const io = LLM_PRESETS.find((p) => p.id === "minimax-io");
+    expect(cn?.baseURL).toContain("minimaxi.com");
+    expect(io?.baseURL).toContain("minimax.io");
   });
 
   it("merge prefers stored over env", () => {
@@ -60,7 +75,7 @@ describe("model-settings helpers", () => {
     expect(next.llm.model).toBe("deepseek-reasoner");
   });
 
-  it("public view never leaks full key", () => {
+  it("public view returns full key for auth-gated UI edit", () => {
     const effective = emptyModelSettings();
     effective.llm = {
       provider: "deepseek",
@@ -73,9 +88,22 @@ describe("model-settings helpers", () => {
       hasEnvLlm: false,
       hasEnvEmbed: false,
     });
-    expect(pub.llm.apiKey).not.toContain("super-secret");
+    // Control-plane GET is auth-protected; UI needs the real key to show/edit.
+    expect(pub.llm.apiKey).toBe("sk-super-secret-value");
     expect(pub.llm.hasApiKey).toBe(true);
     expect(pub.presets.llm.length).toBeGreaterThan(0);
+  });
+
+  it("embedding presets cover domestic providers like chat", async () => {
+    const { EMBEDDING_PRESETS, LLM_PRESETS } = await import(
+      "../../src/settings/model-settings"
+    );
+    const embIds = new Set(EMBEDDING_PRESETS.map((p) => p.id));
+    for (const id of ["siliconflow", "zhipu", "minimax", "minimax-io", "openai", "mimo", "deepseek"]) {
+      expect(embIds.has(id)).toBe(true);
+    }
+    expect(LLM_PRESETS.some((p) => p.id === "minimax")).toBe(true);
+    expect(maskSecret("sk-super-secret-value")).not.toContain("super-secret");
   });
 });
 

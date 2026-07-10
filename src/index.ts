@@ -2734,6 +2734,13 @@ const defaultHandler = {
       }
       const target = body.target === "embedding" ? "embedding" : "llm";
 
+      let probeMeta: {
+        provider: string;
+        baseURL: string;
+        model: string;
+        hasApiKey: boolean;
+        apiKeyLen: number;
+      } | null = null;
       try {
         const previous =
           (await loadStoredModelSettings(env.DB)) ?? mergeFromEnvOnly(env);
@@ -2743,6 +2750,26 @@ const defaultHandler = {
         // Don't require DB resolve for candidate probe (avoid clobbering with stored)
         const { DB: _db, ...probeWithoutDb } = probeEnv as Env & { DB?: D1Database };
 
+        // Safe diagnostics for UI (never include raw secrets)
+        probeMeta =
+          target === "embedding"
+            ? {
+                provider: candidate.embedding.provider || "",
+                baseURL: candidate.embedding.baseURL || "",
+                model: candidate.embedding.model || "",
+                hasApiKey: Boolean(candidate.embedding.apiKey),
+                apiKeyLen: candidate.embedding.apiKey
+                  ? candidate.embedding.apiKey.length
+                  : 0,
+              }
+            : {
+                provider: candidate.llm.provider || "",
+                baseURL: candidate.llm.baseURL || "",
+                model: candidate.llm.model || "",
+                hasApiKey: Boolean(candidate.llm.apiKey),
+                apiKeyLen: candidate.llm.apiKey ? candidate.llm.apiKey.length : 0,
+              };
+
         if (target === "embedding") {
           if (
             isDevLocalProvider(candidate.embedding.provider) &&
@@ -2750,6 +2777,14 @@ const defaultHandler = {
             env.ALLOW_DEV_EMBEDDING !== "true"
           ) {
             throw new Error("local-hash-dev requires ALLOW_DEV_EMBEDDING=true");
+          }
+          if (
+            !isDevLocalProvider(candidate.embedding.provider) &&
+            (!candidate.embedding.baseURL || !candidate.embedding.apiKey)
+          ) {
+            throw new Error(
+              `向量未配置完整：baseURL=${candidate.embedding.baseURL || "(空)"} hasKey=${Boolean(candidate.embedding.apiKey)}。请填写 Base URL 并粘贴 API Key 后再测。`
+            );
           }
           const emb = await createEmbedding(probeWithoutDb as Env);
           const vector = await emb.embed("second brain settings probe");
@@ -2759,22 +2794,44 @@ const defaultHandler = {
             dimensions: vector.length,
             sample: vector.slice(0, 3),
             saved: false,
+            probe: probeMeta,
           });
         }
+        if (!candidate.llm.baseURL || !candidate.llm.apiKey) {
+          throw new Error(
+            `对话未配置完整：baseURL=${candidate.llm.baseURL || "(空)"} hasKey=${Boolean(candidate.llm.apiKey)} keyLen=${probeMeta.apiKeyLen}。切换供应商后必须重新粘贴 API Key，再点测试。`
+          );
+        }
         const llm = await createLLM(probeWithoutDb as Env);
+        // max_tokens 略大：部分模型默认 thinking 会占额度；temperature 用 1 兼容 MiniMax 推荐区间
         const reply = await llm.chat(
           [{ role: "user", content: "Reply with exactly the word: ok" }],
-          { max_tokens: 16, temperature: 0 }
+          { max_tokens: 64, temperature: 1 }
         );
         return json({
           ok: true,
           target,
           reply: reply.trim().slice(0, 200),
           saved: false,
+          probe: probeMeta,
         });
       } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
         return json(
-          { ok: false, target, error: e instanceof Error ? e.message : String(e), saved: false },
+          {
+            ok: false,
+            target,
+            error: msg,
+            saved: false,
+            probe: probeMeta || undefined,
+            // help UI distinguish "our 400" vs auth / empty body
+            hint:
+              msg.includes("2049") || msg.includes("无效的 API")
+                ? "MiniMax 拒钥：检查 Key 是否来自同一区域（国内 minimaxi.com / 国际 minimax.io），并确认是开放平台「接口密钥」而非过期/错误复制。"
+                : msg.includes("No LLM configured")
+                  ? "未读到 LLM_BASE_URL+LLM_API_KEY：请在表单填写 Base URL 与 Key 后再测。"
+                  : undefined,
+          },
           400
         );
       }

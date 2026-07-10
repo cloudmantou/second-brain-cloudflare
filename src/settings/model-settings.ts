@@ -92,12 +92,33 @@ export const LLM_PRESETS: readonly ProviderPresetPublic[] = [
   },
   {
     id: "minimax",
-    label: "MiniMax",
-    baseURL: "https://api.minimax.io/v1",
+    label: "MiniMax 国内",
+    baseURL: "https://api.minimaxi.com/v1",
     model: "MiniMax-M3",
     badge: "MM",
-    hint: "M3 可关 thinking",
-    models: ["MiniMax-M3", "MiniMax-M2.5", "MiniMax-Text-01"],
+    hint: "国内 platform.minimaxi.com 密钥",
+    models: [
+      "MiniMax-M3",
+      "MiniMax-M2.5",
+      "MiniMax-M2.5-highspeed",
+      "MiniMax-M2.1",
+      "MiniMax-Text-01",
+    ],
+  },
+  {
+    id: "minimax-io",
+    label: "MiniMax 国际",
+    baseURL: "https://api.minimax.io/v1",
+    model: "MiniMax-M3",
+    badge: "IO",
+    hint: "国际 platform.minimax.io 密钥",
+    models: [
+      "MiniMax-M3",
+      "MiniMax-M2.5",
+      "MiniMax-M2.5-highspeed",
+      "MiniMax-M2.1",
+      "MiniMax-Text-01",
+    ],
   },
   {
     id: "openai",
@@ -168,7 +189,60 @@ export const LLM_PRESETS: readonly ProviderPresetPublic[] = [
   },
 ];
 
+/**
+ * Embedding presets — aligned with domestic chat providers where possible.
+ * Note: pure chat APIs (e.g. DeepSeek) often have no /embeddings; those cards
+ * open advanced config so users can point at SiliconFlow / TEI / gateways.
+ */
 export const EMBEDDING_PRESETS: readonly EmbeddingPresetPublic[] = [
+  {
+    id: "siliconflow",
+    label: "硅基流动",
+    baseURL: "https://api.siliconflow.cn/v1",
+    model: "BAAI/bge-large-zh-v1.5",
+    dimensions: 1024,
+    badge: "硅",
+    hint: "推荐国内 · BGE 固定 1024",
+    models: ["BAAI/bge-large-zh-v1.5", "BAAI/bge-m3", "BAAI/bge-small-zh-v1.5"],
+    supportsDimensionsParameter: false,
+    fixedDimensions: 1024,
+  },
+  {
+    id: "zhipu",
+    label: "智谱 Embedding",
+    baseURL: "https://open.bigmodel.cn/api/paas/v4",
+    model: "embedding-3",
+    dimensions: 1024,
+    badge: "智",
+    hint: "与 GLM 同 Key",
+    models: ["embedding-3", "embedding-2"],
+    supportsDimensionsParameter: true,
+    allowedDimensions: [256, 512, 1024, 2048],
+  },
+  {
+    id: "minimax",
+    label: "MiniMax 国内",
+    baseURL: "https://api.minimaxi.com/v1",
+    model: "embo-01",
+    dimensions: 1536,
+    badge: "MM",
+    hint: "与对话同 Key · embo-01",
+    models: ["embo-01"],
+    supportsDimensionsParameter: false,
+    fixedDimensions: 1536,
+  },
+  {
+    id: "minimax-io",
+    label: "MiniMax 国际",
+    baseURL: "https://api.minimax.io/v1",
+    model: "embo-01",
+    dimensions: 1536,
+    badge: "IO",
+    hint: "国际站 · 与对话同 Key",
+    models: ["embo-01"],
+    supportsDimensionsParameter: false,
+    fixedDimensions: 1536,
+  },
   {
     id: "openai",
     label: "OpenAI",
@@ -176,31 +250,53 @@ export const EMBEDDING_PRESETS: readonly EmbeddingPresetPublic[] = [
     model: "text-embedding-3-small",
     dimensions: 384,
     badge: "OA",
-    hint: "推荐 384 维",
+    hint: "可调维度 · 常用 384",
     models: ["text-embedding-3-small", "text-embedding-3-large"],
     supportsDimensionsParameter: true,
     allowedDimensions: [384, 512, 768, 1536],
   },
   {
-    id: "siliconflow",
-    label: "硅基流动 BGE",
-    baseURL: "https://api.siliconflow.cn/v1",
-    model: "BAAI/bge-large-zh-v1.5",
-    dimensions: 1024,
-    badge: "硅",
-    hint: "BGE 固定 1024 · 不传 dimensions",
-    models: ["BAAI/bge-large-zh-v1.5", "BAAI/bge-m3"],
-    supportsDimensionsParameter: false,
-    fixedDimensions: 1024,
+    id: "openrouter",
+    label: "OpenRouter",
+    baseURL: "https://openrouter.ai/api/v1",
+    model: "openai/text-embedding-3-small",
+    dimensions: 1536,
+    badge: "OR",
+    hint: "统一网关向量",
+    models: ["openai/text-embedding-3-small", "openai/text-embedding-3-large"],
+    supportsDimensionsParameter: true,
+    allowedDimensions: [384, 512, 768, 1536],
+  },
+  {
+    id: "deepseek",
+    label: "DeepSeek",
+    baseURL: "",
+    model: "",
+    dimensions: 384,
+    badge: "DS",
+    hint: "无官方向量 · 请用硅基/自定义",
+    models: [],
+    supportsDimensionsParameter: true,
+  },
+  {
+    id: "mimo",
+    label: "MiMo / 自定义网关",
+    baseURL: "",
+    model: "",
+    dimensions: 384,
+    badge: "M",
+    hint: "OpenAI 兼容 · 填高级配置",
+    models: [],
+    supportsDimensionsParameter: true,
   },
   {
     id: "custom",
-    label: "自定义",
+    label: "自定义配置",
     baseURL: "",
     model: "",
     dimensions: 384,
     badge: "＋",
-    hint: "自建 TEI / 兼容接口",
+    hint: "自建 TEI / 任意兼容",
     models: [],
     supportsDimensionsParameter: true,
   },
@@ -255,6 +351,19 @@ export function maskSecret(secret: string | undefined | null): string {
 
 export function isMaskedSecret(value: string | undefined): boolean {
   return Boolean(value && value.includes("••"));
+}
+
+/** Trim whitespace/newlines and strip accidental `Bearer ` prefix from pasted keys. */
+export function normalizeApiKey(raw: string): string {
+  let k = String(raw ?? "").trim().replace(/^Bearer\s+/i, "").trim();
+  // Paste from some UIs can include surrounding quotes
+  if (
+    (k.startsWith('"') && k.endsWith('"')) ||
+    (k.startsWith("'") && k.endsWith("'"))
+  ) {
+    k = k.slice(1, -1).trim();
+  }
+  return k;
 }
 
 export interface SettingsEnvInput {
@@ -370,12 +479,14 @@ export function toPublicModelSettings(
       (active && active !== currentFp && !pending)
   );
 
+  // Auth-gated control plane: return full keys so the UI can show/edit them.
+  // maskSecret remains for logs / accidental unauthenticated dumps.
   return {
     llm: {
       provider: effective.llm.provider,
       baseURL: effective.llm.baseURL,
       model: effective.llm.model,
-      apiKey: maskSecret(effective.llm.apiKey),
+      apiKey: effective.llm.apiKey || "",
       hasApiKey: Boolean(effective.llm.apiKey),
     },
     embedding: {
@@ -383,7 +494,7 @@ export function toPublicModelSettings(
       baseURL: effective.embedding.baseURL,
       model: effective.embedding.model,
       dimensions: effective.embedding.dimensions,
-      apiKey: maskSecret(effective.embedding.apiKey),
+      apiKey: effective.embedding.apiKey || "",
       hasApiKey: Boolean(effective.embedding.apiKey),
       supportsDimensionsParameter: effective.embedding.supportsDimensionsParameter,
     },
@@ -429,7 +540,7 @@ export function applyModelSettingsPatch(
       next.llm.apiKey = "";
     } else if (body.llm.apiKey != null) {
       const k = String(body.llm.apiKey);
-      if (k && !isMaskedSecret(k)) next.llm.apiKey = k.trim();
+      if (k && !isMaskedSecret(k)) next.llm.apiKey = normalizeApiKey(k);
     }
     const preset = LLM_PRESETS.find((p) => p.id === next.llm.provider);
     if (preset) {
@@ -453,7 +564,7 @@ export function applyModelSettingsPatch(
       next.embedding.apiKey = "";
     } else if (body.embedding.apiKey != null) {
       const k = String(body.embedding.apiKey);
-      if (k && !isMaskedSecret(k)) next.embedding.apiKey = k.trim();
+      if (k && !isMaskedSecret(k)) next.embedding.apiKey = normalizeApiKey(k);
     }
     const preset = EMBEDDING_PRESETS.find((p) => p.id === next.embedding.provider);
     if (preset) {

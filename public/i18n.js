@@ -1,0 +1,631 @@
+/**
+ * Lightweight i18n for Second Brain UI.
+ * - Auto: navigator.language (zh* → 中文, else English)
+ * - Override: localStorage sb_lang = auto | zh | en
+ * - API: t(key, vars?), setLang(mode), getLang(), applyI18n(root?)
+ *
+ * HTML attributes:
+ *   data-i18n="key"            → textContent
+ *   data-i18n-html="key"       → innerHTML (trusted catalog strings only)
+ *   data-i18n-placeholder="key"
+ *   data-i18n-title="key"
+ *   data-i18n-aria="key"       → aria-label
+ */
+(function (global) {
+  const STORAGE_KEY = "sb_lang";
+
+  const en = {
+    // meta
+    "app.title": "Second Brain",
+    "app.appleTitle": "Second Brain",
+
+    // auth
+    "auth.blurb": "Enter your Bearer token to connect to your personal memory layer.",
+    "auth.token.ph": "Bearer token",
+    "auth.connect": "Connect",
+    "auth.connecting": "Connecting…",
+    "auth.fillBoth": "Please fill in both fields.",
+    "auth.invalidToken": "Invalid token",
+    "auth.serverError": "Server error: {status}",
+    "auth.connectFail": "Could not connect.",
+
+    // nav / chrome
+    "nav.observatory": "Observatory",
+    "nav.recall": "Recall",
+    "nav.recent": "Recent",
+    "nav.remember": "Remember",
+    "nav.settings": "Settings",
+    "status.always": "always remembers",
+    "status.count": "{n} memories stored",
+    "status.thinking": "thinking…",
+    "status.listening": "listening…",
+    "status.ready": "ready",
+
+    // recall
+    "recall.eyebrow": "Recall",
+    "recall.hero": "Ask me anything you've stored away — I'll find it and answer in your own words.",
+    "recall.ph": "Ask your brain…",
+    "recall.clear": "Clear chat",
+    "recall.empty": "I couldn't find anything matching that. Try different words, or check Recent.",
+    "recall.error": "Something went wrong. Check your connection and try again.",
+    "recall.sources": "Sources ({n})",
+    "recall.sourcesOne": "{n} source",
+    "recall.sourcesMany": "{n} sources",
+    "recall.sourcesHide": "Hide sources",
+
+    // suggestions
+    "sug.working": "What am I working on?",
+    "sug.decided": "What did I decide recently?",
+    "sug.tasks": "Show my tasks",
+    "sug.goals": "What are my goals?",
+    "sug.ideas": "What ideas do I have?",
+    "sug.week": "Last week",
+    "sug.month": "This month",
+
+    // recent
+    "recent.loading": "Loading memories…",
+    "recent.loadingShort": "Loading…",
+    "recent.fail": "Could not load memories.",
+    "recent.empty": "No memories yet.<br>Use Remember to add some.",
+    "recent.today": "Today",
+    "recent.yesterday": "Yesterday",
+    "filter.allTags": "All tags",
+    "filter.allTime": "All time",
+    "filter.today": "Today",
+    "filter.7d": "Last 7 days",
+    "filter.30d": "Last 30 days",
+    "filter.month": "This month",
+    "card.forget": "Forget",
+    "card.append": "Append",
+    "card.edit": "Edit",
+    "card.notIndexed": "Not indexed",
+    "card.vecOn": "Vectorized — searchable via recall",
+    "card.vecPending": "Vectorizing… (just captured)",
+    "card.vecOff": "Not vectorized — won't appear in recall",
+
+    // remember
+    "remember.eyebrow": "Remember",
+    "remember.hero": "What's worth keeping? Write it down — add <span class=\"hashtag\">#tags</span> anywhere and I'll file it.",
+    "remember.hint": "Tip: add <span class=\"hint-tags\">#tags</span> anywhere in your message",
+    "remember.ph": "Tell your brain something…",
+    "remember.clear": "Clear chat",
+    "remember.kept": "Kept. I'll remember that.",
+    "remember.dup": "Already kept — I have something very similar, so I skipped the duplicate.",
+    "remember.tagged": "Tagged as:",
+    "remember.error": "Something went wrong. Try again.",
+
+    // dialogs
+    "confirm.forgetTitle": "Forget this memory?",
+    "confirm.forgetBody": "This can't be undone. The memory will be removed from your brain.",
+    "confirm.cancel": "Cancel",
+    "confirm.forget": "Forget",
+    "confirm.forgetting": "Forgetting…",
+    "append.title": "Add an update",
+    "append.ph": "What's changed or new?",
+    "append.cancel": "Cancel",
+    "append.save": "Update",
+    "append.saving": "Saving…",
+    "edit.title": "Edit memory",
+    "edit.ph": "Edit your memory…",
+    "edit.hint": "Use <span style=\"font-style: italic\">#hashtags</span> to add new tags",
+    "edit.cancel": "Cancel",
+    "edit.save": "Save",
+    "edit.saving": "Saving…",
+    "view.title": "Memory",
+    "view.append": "Append",
+    "view.edit": "Edit",
+    "view.forget": "Forget",
+
+    // menu / stats
+    "menu.title": "Second Brain",
+    "menu.memories": "Memories",
+    "menu.avgImportance": "Avg Importance",
+    "menu.topTags": "Most used tags",
+    "menu.noTags": "No tags yet",
+    "menu.appearance": "Appearance",
+    "menu.themeLight": "Light",
+    "menu.themeDark": "Dark",
+    "menu.themeAuto": "Match system",
+    "menu.themeAutoShort": "Auto",
+    "menu.language": "Language",
+    "menu.langAuto": "System",
+    "menu.langZh": "中文",
+    "menu.langEn": "English",
+    "menu.models": "Models & API",
+    "menu.observatory": "Observatory",
+    "menu.viewAll": "View all memories",
+    "menu.exportJson": "Export as JSON",
+    "menu.exportMd": "Export as Markdown",
+    "menu.importJson": "Import JSON",
+    "menu.disconnect": "Disconnect",
+
+    // digest / ops sections (dynamic)
+    "digest.ready": "Ready to compress",
+    "digest.note": "Originals are never deleted — digest adds a summary and ranks originals lower in recall so they don't crowd results.",
+    "digest.compress": "Compress",
+    "digest.btn": "Digest →",
+    "digest.entries": "{n} entries",
+    "digest.working": "Working…",
+    "digest.done": "Done",
+    "digest.fail": "Could not create digest",
+    "digest.reqFail": "Request failed",
+    "digest.preserved": "{n} original memories preserved & still searchable",
+    "vectorize.title": "Not indexed",
+    "vectorize.btn": "Vectorize now →",
+    "vectorize.note": "{n} memories failed to embed and won't appear in recall.",
+    "vectorize.noteOne": "{n} memory failed to embed and won't appear in recall.",
+    "vectorize.working": "Working…",
+    "vectorize.done": "Done — {n} re-indexed",
+    "vectorize.reqFail": "Request failed",
+    "classify.title": "Not classified",
+    "classify.btn": "Classify now →",
+    "classify.note": "{n} memories have no kind or status tag yet (captured before classification existed).",
+    "classify.noteOne": "{n} memory has no kind or status tag yet (captured before classification existed).",
+    "classify.working": "Working…",
+    "classify.done": "Done — {n} classified",
+    "classify.reqFail": "Request failed",
+
+    // models sheet
+    "models.title": "Models & API",
+    "models.sub": "Pick a provider to fill base URL and recommended model — usually you only need an API key. Saves apply immediately, no restart. Keys are stored in the local database; protect the DB file and login token.",
+    "models.tabLlm": "Chat model",
+    "models.tabEmb": "Embedding model",
+    "models.presets": "Presets",
+    "models.apiKey": "API Key",
+    "models.keyRequired": "Required",
+    "models.keySaved": "Saved · tap eye to show",
+    "models.keySwitch": "Re-enter after switching provider",
+    "models.keyPh": "Paste your API key",
+    "models.keyPhEmb": "Paste embedding API key",
+    "models.keyLoaded": "Loaded saved key",
+    "models.showKey": "Show key",
+    "models.hideKey": "Hide key",
+    "models.advanced": "Advanced · Base URL / model",
+    "models.baseUrl": "Base URL",
+    "models.modelId": "Model ID",
+    "models.testChat": "Test chat",
+    "models.testEmb": "Test embedding",
+    "models.dim": "Dimensions",
+    "models.dimHint": "Must match index · often 384",
+    "models.copyLlmKey": "Use chat model Key / Base",
+    "models.save": "Save",
+    "models.close": "Close",
+    "models.loading": "Loading…",
+    "models.saving": "Saving…",
+    "models.saved": "Saved — new requests use this config immediately.",
+    "models.needLlmKey": "After switching chat provider you must enter a new API key",
+    "models.needEmbKey": "After switching embedding provider you must enter a new API key",
+    "models.saveFail": "Save failed",
+    "models.testingChat": "Testing chat (not saved)…",
+    "models.testingEmb": "Testing embedding (not saved)…",
+    "models.testOkChat": "Chat OK · reply={reply} · not saved yet",
+    "models.testOkEmb": "Embedding OK · dim={dim} · not saved yet",
+    "models.testFail": "Test failed",
+    "models.needBase": "Enter or pick a Base URL first (CN MiniMax: https://api.minimaxi.com/v1)",
+    "models.needModel": "Enter a model id, e.g. MiniMax-M3",
+    "models.needKeyTest": "Enter an API key before testing (switching provider does not reuse other providers' keys)",
+    "models.copyOk": "Filled chat API key{andBase}. Confirm embedding model / dimensions, then test.",
+    "models.copyAndBase": " and Base URL",
+    "models.copyNoKey": "Chat model has no key yet",
+    "models.reindexClear": "Clearing old vectors…",
+    "models.reindexFail": "reindex failed",
+    "models.reindexReset": "Reset {n} entries, batch vectorizing…",
+    "models.reindexProgress": "Rebuilding vectors: batch +{processed}, total {total}, failed {failed}, remaining {remaining}",
+    "models.reindexStuck": "Vectorize stalled (remaining {remaining}, repeated failures). Check embedding config.",
+    "models.reindexDone": "Vector rebuild done: ok {ok}, failed {failed}",
+    "models.reindexPrompt": "Start vector reindex now?",
+    "models.statusChat": "Chat: {provider} · {model}",
+    "models.statusChatUncfg": "Chat: unconfigured",
+    "models.statusEmb": "Embed: {provider} · {model} · {dim}d",
+    "models.statusEmbUncfg": "Embed: unconfigured",
+    "models.devHashWarn": "Dev hash vectors · do not use for real memory",
+    "models.reindexRequired": "Vector reindex required",
+    "models.fpWarn": "Embedding config changed. Use Rebuild or POST /settings/models/reindex, then vectorize-pending until done.",
+    "models.emptyResponse": "Empty response from server (HTTP {status}). git pull origin selfhost and restart npm run server.",
+    "models.notJson": "Response is not JSON (HTTP {status}): {body}",
+
+    // observatory
+    "obs.title": "Observatory · Second Brain",
+    "obs.back": "← App",
+    "obs.heading": "Observatory",
+    "obs.sub": "Request / model / memory telemetry",
+    "obs.authBlurb": "Use the same Bearer token as Second Brain. Opening from Settings may prefill it.",
+    "obs.refresh": "Refresh",
+    "obs.refreshing": "Refreshing…",
+    "obs.autoRefresh": "Auto refresh",
+    "obs.allOps": "All operations",
+    "obs.range1h": "Last 1h",
+    "obs.range24h": "Last 24h",
+    "obs.range3d": "Last 3d",
+    "obs.range7d": "Last 7d",
+    "obs.range30d": "Last 30d",
+    "obs.loading": "Loading…",
+    "obs.error": "Failed to load",
+    "obs.updated": "Window {hours}h · updated {time}",
+    "obs.opsTitle": "Operations",
+    "obs.logsTitle": "Recent requests",
+    "obs.colTime": "Time",
+    "obs.colOp": "Op",
+    "obs.colStatus": "Status",
+    "obs.colMs": "Latency",
+    "obs.colPreview": "Preview",
+    "obs.logsEmpty": "No request logs yet. Use memory features to generate data.",
+    "obs.logsFail": "Failed to load logs",
+    "obs.opsEmpty": "No operation breakdown yet",
+    "obs.kpiRequests": "Requests",
+    "obs.kpiErrors": "Errors {n}",
+    "obs.kpiSuccess": "Success rate",
+    "obs.kpiAvg": "Avg {ms}",
+    "obs.kpiMaxLatency": "Max latency",
+    "obs.kpiPeak": "Peak in window",
+    "obs.kpiModels": "Model calls",
+    "obs.kpiTokens": "Tokens {tokens} · fails {errors}",
+    "obs.memMeta": "Writes {created} · recalls {recalled}",
+    "obs.ok": "OK",
+    "obs.fail": "Fail",
+    "obs.traceTitle": "Trace detail",
+    "obs.httpReqs": "HTTP requests",
+    "obs.modelCalls": "Model calls",
+    "obs.memEvents": "Memory events",
+    "obs.close": "Close",
+  };
+
+  const zh = {
+    "app.title": "第二大脑",
+    "app.appleTitle": "第二大脑",
+
+    "auth.blurb": "输入 Bearer 令牌，连接到你的个人记忆层。",
+    "auth.token.ph": "Bearer 令牌",
+    "auth.connect": "连接",
+    "auth.connecting": "连接中…",
+    "auth.fillBoth": "请填写地址和令牌。",
+    "auth.invalidToken": "令牌无效",
+    "auth.serverError": "服务器错误：{status}",
+    "auth.connectFail": "无法连接。",
+
+    "nav.observatory": "观测台",
+    "nav.recall": "回忆",
+    "nav.recent": "近期",
+    "nav.remember": "记住",
+    "nav.settings": "设置",
+    "status.always": "始终记得",
+    "status.count": "已存 {n} 条记忆",
+    "status.thinking": "思考中…",
+    "status.listening": "聆听中…",
+    "status.ready": "就绪",
+
+    "recall.eyebrow": "回忆",
+    "recall.hero": "随便问你存过的事——我会用你自己的话找出来并回答。",
+    "recall.ph": "问问你的大脑…",
+    "recall.clear": "清空对话",
+    "recall.empty": "没有找到相关记忆。换个说法试试，或去「近期」看看。",
+    "recall.error": "出了点问题。请检查网络后重试。",
+    "recall.sources": "来源（{n}）",
+    "recall.sourcesOne": "{n} 条来源",
+    "recall.sourcesMany": "{n} 条来源",
+    "recall.sourcesHide": "收起来源",
+
+    "sug.working": "我在忙什么？",
+    "sug.decided": "最近做了哪些决定？",
+    "sug.tasks": "看看我的任务",
+    "sug.goals": "我的目标是什么？",
+    "sug.ideas": "我有哪些想法？",
+    "sug.week": "上周",
+    "sug.month": "本月",
+
+    "recent.loading": "正在加载记忆…",
+    "recent.loadingShort": "加载中…",
+    "recent.fail": "无法加载记忆。",
+    "recent.empty": "还没有记忆。<br>去「记住」写下第一条吧。",
+    "recent.today": "今天",
+    "recent.yesterday": "昨天",
+    "filter.allTags": "全部标签",
+    "filter.allTime": "全部时间",
+    "filter.today": "今天",
+    "filter.7d": "近 7 天",
+    "filter.30d": "近 30 天",
+    "filter.month": "本月",
+    "card.forget": "忘记",
+    "card.append": "追加",
+    "card.edit": "编辑",
+    "card.notIndexed": "未索引",
+    "card.vecOn": "已向量化 — 可被回忆检索",
+    "card.vecPending": "向量化中…（刚写入）",
+    "card.vecOff": "未向量化 — 回忆检索不到",
+
+    "remember.eyebrow": "记住",
+    "remember.hero": "值得留下的写下来——任意位置加 <span class=\"hashtag\">#标签</span>，我会帮你归档。",
+    "remember.hint": "提示：在消息任意位置加 <span class=\"hint-tags\">#标签</span>",
+    "remember.ph": "告诉大脑一件事…",
+    "remember.clear": "清空对话",
+    "remember.kept": "已记住。",
+    "remember.dup": "内容很相似，已跳过重复，没有再存一份。",
+    "remember.tagged": "标签：",
+    "remember.error": "出错了，请重试。",
+
+    "confirm.forgetTitle": "忘记这条记忆？",
+    "confirm.forgetBody": "此操作无法撤销，记忆将从大脑中移除。",
+    "confirm.cancel": "取消",
+    "confirm.forget": "忘记",
+    "confirm.forgetting": "删除中…",
+    "append.title": "追加更新",
+    "append.ph": "有什么变化或新内容？",
+    "append.cancel": "取消",
+    "append.save": "更新",
+    "append.saving": "保存中…",
+    "edit.title": "编辑记忆",
+    "edit.ph": "编辑这条记忆…",
+    "edit.hint": "用 <span style=\"font-style: italic\">#标签</span> 添加新标签",
+    "edit.cancel": "取消",
+    "edit.save": "保存",
+    "edit.saving": "保存中…",
+    "view.title": "记忆",
+    "view.append": "追加",
+    "view.edit": "编辑",
+    "view.forget": "忘记",
+
+    "menu.title": "第二大脑",
+    "menu.memories": "记忆数",
+    "menu.avgImportance": "平均重要度",
+    "menu.topTags": "常用标签",
+    "menu.noTags": "暂无标签",
+    "menu.appearance": "外观",
+    "menu.themeLight": "浅色",
+    "menu.themeDark": "深色",
+    "menu.themeAuto": "跟随系统",
+    "menu.themeAutoShort": "自动",
+    "menu.language": "语言",
+    "menu.langAuto": "跟随系统",
+    "menu.langZh": "中文",
+    "menu.langEn": "English",
+    "menu.models": "模型与 API",
+    "menu.observatory": "观测台",
+    "menu.viewAll": "查看全部记忆",
+    "menu.exportJson": "导出 JSON",
+    "menu.exportMd": "导出 Markdown",
+    "menu.importJson": "导入 JSON",
+    "menu.disconnect": "断开连接",
+
+    "digest.ready": "可压缩",
+    "digest.note": "原文不会删除——摘要会降低原文在回忆中的排序，避免挤占结果。",
+    "digest.compress": "压缩",
+    "digest.btn": "生成摘要 →",
+    "digest.entries": "{n} 条",
+    "digest.working": "处理中…",
+    "digest.done": "完成",
+    "digest.fail": "无法生成摘要",
+    "digest.reqFail": "请求失败",
+    "digest.preserved": "已保留 {n} 条原文，仍可检索",
+    "vectorize.title": "未索引",
+    "vectorize.btn": "立即向量化 →",
+    "vectorize.note": "{n} 条记忆向量化失败，回忆检索不到。",
+    "vectorize.noteOne": "{n} 条记忆向量化失败，回忆检索不到。",
+    "vectorize.working": "处理中…",
+    "vectorize.done": "完成 — 已重建 {n} 条",
+    "vectorize.reqFail": "请求失败",
+    "classify.title": "未分类",
+    "classify.btn": "立即分类 →",
+    "classify.note": "{n} 条记忆尚无 kind/status 标签（分类功能上线前写入）。",
+    "classify.noteOne": "{n} 条记忆尚无 kind/status 标签（分类功能上线前写入）。",
+    "classify.working": "处理中…",
+    "classify.done": "完成 — 已分类 {n} 条",
+    "classify.reqFail": "请求失败",
+
+    "models.title": "模型与 API",
+    "models.sub": "点选供应商后自动填入接口地址与推荐模型，一般只需填写 API Key。保存后立即生效，无需重启。Key 存在本机数据库，请保护好数据库文件与登录令牌。",
+    "models.tabLlm": "对话模型",
+    "models.tabEmb": "向量模型",
+    "models.presets": "预设供应商",
+    "models.apiKey": "API Key",
+    "models.keyRequired": "必填",
+    "models.keySaved": "已保存 · 可点眼睛显示",
+    "models.keySwitch": "切换供应商后需重新填写",
+    "models.keyPh": "粘贴你的 API Key",
+    "models.keyPhEmb": "粘贴 Embedding API Key",
+    "models.keyLoaded": "已加载已保存的 Key",
+    "models.showKey": "显示密钥",
+    "models.hideKey": "隐藏密钥",
+    "models.advanced": "高级选项 · 接口地址 / 模型",
+    "models.baseUrl": "接口地址 (Base URL)",
+    "models.modelId": "模型 ID",
+    "models.testChat": "测试对话",
+    "models.testEmb": "测试向量",
+    "models.dim": "向量维度",
+    "models.dimHint": "须与索引一致 · 常用 384",
+    "models.copyLlmKey": "使用对话模型的 Key / Base",
+    "models.save": "保存",
+    "models.close": "关闭",
+    "models.loading": "加载中…",
+    "models.saving": "保存中…",
+    "models.saved": "已保存，新请求立即使用此配置。",
+    "models.needLlmKey": "切换对话供应商后必须重新填写 API Key",
+    "models.needEmbKey": "切换向量供应商后必须重新填写 API Key",
+    "models.saveFail": "保存失败",
+    "models.testingChat": "测试对话中（不会保存）…",
+    "models.testingEmb": "测试向量中（不会保存）…",
+    "models.testOkChat": "对话测试通过 · 回复={reply} · 尚未保存",
+    "models.testOkEmb": "向量测试通过 · 维度={dim} · 尚未保存",
+    "models.testFail": "测试失败",
+    "models.needBase": "请先填写或选择供应商的 Base URL（国内 MiniMax 用 https://api.minimaxi.com/v1）",
+    "models.needModel": "请填写模型名，例如 MiniMax-M3",
+    "models.needKeyTest": "请先填写 API Key 再点测试（切换供应商后不会沿用其他供应商的 Key）",
+    "models.copyOk": "已填入对话模型的 API Key{andBase}。请确认向量模型 ID / 维度后测试。",
+    "models.copyAndBase": " 与 Base URL",
+    "models.copyNoKey": "对话模型尚未填写 Key",
+    "models.reindexClear": "正在清空旧向量…",
+    "models.reindexFail": "reindex 失败",
+    "models.reindexReset": "已重置 {n} 条，开始批量向量化…",
+    "models.reindexProgress": "重建向量中：本批 +{processed}，累计 {total}，失败 {failed}，剩余 {remaining}",
+    "models.reindexStuck": "向量化停滞（剩余 {remaining}，连续失败）。请检查 Embedding 配置。",
+    "models.reindexDone": "向量重建完成：成功 {ok}，失败 {failed}",
+    "models.reindexPrompt": "是否立即开始重建向量索引？",
+    "models.statusChat": "对话：{provider} · {model}",
+    "models.statusChatUncfg": "对话：未配置",
+    "models.statusEmb": "向量：{provider} · {model} · {dim}维",
+    "models.statusEmbUncfg": "向量：未配置",
+    "models.devHashWarn": "开发用哈希向量 · 勿用于正式记忆",
+    "models.reindexRequired": "需重建向量索引",
+    "models.fpWarn": "向量配置已变更，请在保存后使用「开始重建」或设置页提示完成向量重建。",
+    "models.emptyResponse": "服务器返回空响应 (HTTP {status})。请确认已 git pull origin selfhost 并重启 npm run server",
+    "models.notJson": "响应不是 JSON (HTTP {status}): {body}",
+
+    "obs.title": "观测台 · 第二大脑",
+    "obs.back": "← 返回应用",
+    "obs.heading": "观测台",
+    "obs.sub": "请求 / 模型 / 记忆遥测",
+    "obs.authBlurb": "使用与第二大脑相同的 Bearer 令牌登录。可从主应用设置进入本页后自动带入。",
+    "obs.refresh": "刷新",
+    "obs.refreshing": "刷新中…",
+    "obs.autoRefresh": "自动刷新",
+    "obs.allOps": "全部操作",
+    "obs.range1h": "近 1 小时",
+    "obs.range24h": "近 24 小时",
+    "obs.range3d": "近 3 天",
+    "obs.range7d": "近 7 天",
+    "obs.range30d": "近 30 天",
+    "obs.loading": "加载中…",
+    "obs.error": "加载失败",
+    "obs.updated": "窗口 {hours}h · 更新于 {time}",
+    "obs.opsTitle": "业务操作分布",
+    "obs.logsTitle": "最近请求",
+    "obs.colTime": "时间",
+    "obs.colOp": "操作",
+    "obs.colStatus": "状态",
+    "obs.colMs": "耗时",
+    "obs.colPreview": "预览",
+    "obs.logsEmpty": "暂无请求日志。使用记忆功能后会出现数据。",
+    "obs.logsFail": "日志加载失败",
+    "obs.opsEmpty": "暂无操作分布",
+    "obs.kpiRequests": "请求次数",
+    "obs.kpiErrors": "错误 {n}",
+    "obs.kpiSuccess": "成功率",
+    "obs.kpiAvg": "平均 {ms}",
+    "obs.kpiMaxLatency": "最大延迟",
+    "obs.kpiPeak": "窗口内峰值",
+    "obs.kpiModels": "模型调用",
+    "obs.kpiTokens": "Token {tokens} · 失败 {errors}",
+    "obs.memMeta": "记忆写入 {created} · 召回 {recalled}",
+    "obs.ok": "成功",
+    "obs.fail": "失败",
+    "obs.traceTitle": "Trace 详情",
+    "obs.httpReqs": "HTTP 请求",
+    "obs.modelCalls": "模型调用",
+    "obs.memEvents": "记忆事件",
+    "obs.close": "关闭",
+  };
+
+  const catalogs = { en, zh };
+
+  function detectSystemLang() {
+    let nav = "en";
+    try {
+      if (typeof navigator !== "undefined") {
+        nav =
+          (navigator.languages && navigator.languages[0]) ||
+          navigator.language ||
+          "en";
+      }
+    } catch (_) {}
+    return String(nav).toLowerCase().startsWith("zh") ? "zh" : "en";
+  }
+
+  function getMode() {
+    try {
+      const v = localStorage.getItem(STORAGE_KEY);
+      if (v === "zh" || v === "en" || v === "auto") return v;
+    } catch (_) {}
+    return "auto";
+  }
+
+  function getLang() {
+    const mode = getMode();
+    if (mode === "zh" || mode === "en") return mode;
+    return detectSystemLang();
+  }
+
+  function setLang(mode) {
+    const m = mode === "zh" || mode === "en" || mode === "auto" ? mode : "auto";
+    try {
+      localStorage.setItem(STORAGE_KEY, m);
+    } catch (_) {}
+    applyI18n(document);
+    try {
+      global.dispatchEvent(new CustomEvent("sb:langchange", { detail: { lang: getLang(), mode: m } }));
+    } catch (_) {}
+    return getLang();
+  }
+
+  function interpolate(str, vars) {
+    if (!vars) return str;
+    return String(str).replace(/\{(\w+)\}/g, (_, k) =>
+      vars[k] != null ? String(vars[k]) : `{${k}}`
+    );
+  }
+
+  function t(key, vars) {
+    const lang = getLang();
+    const cat = catalogs[lang] || catalogs.en;
+    const raw = cat[key] != null ? cat[key] : catalogs.en[key] != null ? catalogs.en[key] : key;
+    return interpolate(raw, vars);
+  }
+
+  function applyI18n(root) {
+    const scope = root || document;
+    const lang = getLang();
+    try {
+      if (document.documentElement) {
+        document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+      }
+      if (document.title != null) {
+        // prefer page-specific title key if body has data-i18n-title-key
+        const titleKey =
+          (document.body && document.body.getAttribute("data-i18n-title-key")) || "app.title";
+        document.title = t(titleKey);
+      }
+      const apple = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+      if (apple) apple.setAttribute("content", t("app.appleTitle"));
+    } catch (_) {}
+
+    scope.querySelectorAll("[data-i18n]").forEach((el) => {
+      const key = el.getAttribute("data-i18n");
+      if (key) el.textContent = t(key);
+    });
+    scope.querySelectorAll("[data-i18n-html]").forEach((el) => {
+      const key = el.getAttribute("data-i18n-html");
+      if (key) el.innerHTML = t(key);
+    });
+    scope.querySelectorAll("[data-i18n-placeholder]").forEach((el) => {
+      const key = el.getAttribute("data-i18n-placeholder");
+      if (key) el.setAttribute("placeholder", t(key));
+    });
+    scope.querySelectorAll("[data-i18n-title]").forEach((el) => {
+      const key = el.getAttribute("data-i18n-title");
+      if (key) el.setAttribute("title", t(key));
+    });
+    scope.querySelectorAll("[data-i18n-aria]").forEach((el) => {
+      const key = el.getAttribute("data-i18n-aria");
+      if (key) el.setAttribute("aria-label", t(key));
+    });
+
+    // Sync language toggle buttons if present
+    scope.querySelectorAll("[data-lang-val]").forEach((btn) => {
+      const val = btn.getAttribute("data-lang-val");
+      btn.classList.toggle("active", val === getMode());
+    });
+  }
+
+  // Expose
+  global.SB_I18N = { t, setLang, getLang, getMode, applyI18n, detectSystemLang, catalogs };
+  global.t = t;
+  global.setLang = setLang;
+  global.getLang = getLang;
+  global.applyI18n = applyI18n;
+
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", () => applyI18n(document));
+    } else {
+      applyI18n(document);
+    }
+  }
+})(typeof window !== "undefined" ? window : globalThis);

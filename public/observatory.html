@@ -4,7 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#F4F1EA" />
-    <title>观测台 · Second Brain</title>
+    <title>观测台 · 第二大脑</title>
+    <script src="i18n.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link
       href="https://fonts.googleapis.com/css2?family=Lora:wght@400;500;600&family=DM+Sans:opsz,wght@9..40,400;500;600&display=swap"
@@ -308,13 +309,13 @@
       }
     </style>
   </head>
-  <body>
+  <body data-i18n-title-key="obs.title">
     <div id="auth-gate" class="auth-gate" style="display: none">
-      <h2>观测台</h2>
-      <p>使用与 Second Brain 相同的 Bearer 令牌登录。可从主应用 Settings 进入本页后自动带入。</p>
+      <h2 data-i18n="obs.heading">观测台</h2>
+      <p data-i18n="obs.authBlurb">使用与第二大脑相同的 Bearer 令牌登录。可从主应用设置进入本页后自动带入。</p>
       <input id="auth-url" type="url" placeholder="https://agent.mtzs.cloud" />
-      <input id="auth-token" type="password" placeholder="AUTH_TOKEN" autocomplete="current-password" />
-      <button class="primary" style="width: 100%" onclick="doLogin()">连接</button>
+      <input id="auth-token" type="password" data-i18n-placeholder="auth.token.ph" placeholder="Bearer 令牌" autocomplete="current-password" />
+      <button class="primary" style="width: 100%" onclick="doLogin()" data-i18n="auth.connect">连接</button>
       <p id="auth-err" style="color: var(--danger); margin-top: 10px; min-height: 18px"></p>
     </div>
 
@@ -322,31 +323,31 @@
       <header class="top">
         <div class="brand">
           <div>
-            <h1>观测台</h1>
-            <div class="sub">系统如何处理记忆 · 请求 / 模型 / 延迟</div>
+            <h1 data-i18n="obs.heading">观测台</h1>
+            <div class="sub" data-i18n="obs.sub">请求 / 模型 / 记忆遥测</div>
           </div>
-          <a href="/">← 返回记忆</a>
+          <a href="/" data-i18n="obs.back">← 返回应用</a>
         </div>
         <div class="controls">
           <select id="hours" onchange="refresh()">
-            <option value="1">最近 1 小时</option>
-            <option value="24" selected>最近 24 小时</option>
-            <option value="72">最近 3 天</option>
-            <option value="168">最近 7 天</option>
+            <option value="1" data-i18n="obs.range1h">近 1 小时</option>
+            <option value="24" selected data-i18n="obs.range24h">近 24 小时</option>
+            <option value="72" data-i18n="obs.range3d">近 3 天</option>
+            <option value="168" data-i18n="obs.range7d">近 7 天</option>
           </select>
           <select id="op-filter" onchange="loadLogs()">
-            <option value="">全部操作</option>
+            <option value="" data-i18n="obs.allOps">全部操作</option>
           </select>
           <label style="font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px">
             <input type="checkbox" id="auto-refresh" onchange="toggleAuto()" />
-            自动刷新
+            <span data-i18n="obs.autoRefresh">自动刷新</span>
           </label>
-          <button onclick="refresh()">刷新</button>
+          <button onclick="refresh()" data-i18n="obs.refresh">刷新</button>
         </div>
       </header>
 
       <main>
-        <p class="status-line" id="status-line">加载中…</p>
+        <p class="status-line" id="status-line" data-i18n="obs.loading">加载中…</p>
         <div class="kpi-row" id="kpi-row"></div>
 
         <div class="section">
@@ -409,6 +410,13 @@
       }
 
       function init() {
+        // Prefer in-app Observatory panel (left nav → right main)
+        try {
+          if (localStorage.getItem("sb_token")) {
+            location.replace("/?tab=observatory")
+            return
+          }
+        } catch (_) {}
         applyTheme()
         BASE = localStorage.getItem("sb_url") || window.location.origin
         TOKEN = localStorage.getItem("sb_token") || ""

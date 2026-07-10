@@ -26,6 +26,42 @@ function normalizeBaseURL(baseURL: string): string {
   return baseURL.replace(/\/+$/, "");
 }
 
+function normalizeApiKey(apiKey: string): string {
+  let k = String(apiKey ?? "").trim().replace(/^Bearer\s+/i, "").trim();
+  if (
+    (k.startsWith('"') && k.endsWith('"')) ||
+    (k.startsWith("'") && k.endsWith("'"))
+  ) {
+    k = k.slice(1, -1).trim();
+  }
+  return k;
+}
+
+/** Enrich provider 401/2049 messages with region/key-type hints (esp. MiniMax). */
+function enrichLlmHttpError(status: number, errBody: string, baseURL: string): string {
+  const body = errBody.slice(0, 300);
+  let msg = `LLM error ${status}: ${body}`;
+  const lower = `${baseURL} ${body}`.toLowerCase();
+  const isMiniMax =
+    lower.includes("minimax") ||
+    lower.includes("authorized_error") ||
+    body.includes("2049") ||
+    body.includes("无效的 API");
+  if (status === 401 || body.includes("2049")) {
+    if (isMiniMax || baseURL.includes("minimax")) {
+      const isIo = baseURL.includes("minimax.io");
+      const isCn = baseURL.includes("minimaxi.com");
+      const regionHint = isIo
+        ? "当前 Base URL 是国际站 api.minimax.io；若密钥来自国内 platform.minimaxi.com，请改用 https://api.minimaxi.com/v1"
+        : isCn
+          ? "当前 Base URL 是国内站 api.minimaxi.com；若密钥来自国际 platform.minimax.io，请改用 https://api.minimax.io/v1"
+          : "请确认密钥与 Base URL 区域一致（国内 minimaxi.com / 国际 minimax.io）";
+      msg += ` | 提示: MiniMax 401/2049=密钥无效或区域不匹配。${regionHint}。密钥需在开放平台「接口密钥」创建，不要混用 Coding Plan 订阅 Key 与按量 API Key。`;
+    }
+  }
+  return msg;
+}
+
 function textToCfSseStream(text: string): ReadableStream {
   const encoder = new TextEncoder();
   return new ReadableStream({
@@ -52,7 +88,7 @@ export class OpenAICompatibleLLM implements LLMProvider {
 
   constructor(config: OpenAICompatibleConfig) {
     this.baseURL = normalizeBaseURL(config.baseURL);
-    this.apiKey = config.apiKey;
+    this.apiKey = normalizeApiKey(config.apiKey);
     this.model = config.model;
     this.defaultExtraBody = config.defaultExtraBody;
   }
@@ -85,7 +121,7 @@ export class OpenAICompatibleLLM implements LLMProvider {
 
       if (!response.ok) {
         const errBody = await response.text().catch(() => "");
-        throw new Error(`LLM error ${response.status}: ${errBody.slice(0, 200)}`);
+        throw new Error(enrichLlmHttpError(response.status, errBody, this.baseURL));
       }
 
       const json = (await response.json()) as {
@@ -138,7 +174,7 @@ export class OpenAICompatibleEmbedding implements EmbeddingProvider {
 
   constructor(config: OpenAICompatibleEmbeddingConfig) {
     this.baseURL = normalizeBaseURL(config.baseURL);
-    this.apiKey = config.apiKey;
+    this.apiKey = normalizeApiKey(config.apiKey);
     this.model = config.model;
     this.dimensions = config.dimensions;
     this.sendDimensionsParameter = config.sendDimensionsParameter !== false;
