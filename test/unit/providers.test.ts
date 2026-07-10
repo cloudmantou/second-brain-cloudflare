@@ -152,4 +152,50 @@ describe("OpenAICompatibleEmbedding", () => {
     });
     await expect(emb.embed("hello")).resolves.toEqual([0.1, 0.2, 0.3]);
   });
+
+  it("uses MiniMax native texts/type body and vectors[] response", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        vectors: [[0.01, 0.02, 0.03]],
+        base_resp: { status_code: 0, status_msg: "" },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const emb = new OpenAICompatibleEmbedding({
+      baseURL: "https://api.minimaxi.com/v1",
+      apiKey: "sk-mm",
+      model: "embo-01",
+      dimensions: 3,
+      sendDimensionsParameter: false,
+    });
+    await expect(emb.embed("probe", { purpose: "query" })).resolves.toEqual([
+      0.01, 0.02, 0.03,
+    ]);
+    const [, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse(init.body);
+    expect(body.texts).toEqual(["probe"]);
+    expect(body.type).toBe("query");
+    expect(body.model).toBe("embo-01");
+    expect(body.input).toBeUndefined();
+    expect(body.dimensions).toBeUndefined();
+  });
+
+  it("surfaces MiniMax base_resp errors", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          base_resp: { status_code: 2013, status_msg: "invalid params" },
+        }),
+      })
+    );
+    const emb = new OpenAICompatibleEmbedding({
+      baseURL: "https://api.minimax.io/v1",
+      apiKey: "sk",
+      model: "embo-01",
+    });
+    await expect(emb.embed("x")).rejects.toThrow(/2013|invalid params/);
+  });
 });

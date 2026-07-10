@@ -273,8 +273,12 @@ function loginHtml(error?: string): string {
 </html>`;
 }
 
-async function embed(text: string, env: Env): Promise<number[]> {
-  return (await createEmbedding(env)).embed(text);
+async function embed(
+  text: string,
+  env: Env,
+  purpose: "document" | "query" = "document"
+): Promise<number[]> {
+  return (await createEmbedding(env)).embed(text, { purpose });
 }
 
 // ─── Database initialization ──────────────────────────────────────────────────
@@ -1238,7 +1242,7 @@ export async function recallEntries(
 
   const tokens = tokenizeQuery(embedQuery);
   const [values, queryTags] = await Promise.all([
-    embed(embedQuery, env),
+    embed(embedQuery, env, "query"),
     inferQueryTags(embedQuery, env),
   ]);
 

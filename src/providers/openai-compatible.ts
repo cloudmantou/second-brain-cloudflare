@@ -4,7 +4,7 @@
  */
 
 import type { ChatMessage, ChatOptions, LLMProvider } from "./llm";
-import type { EmbeddingProvider } from "./embedding";
+import type { EmbedOptions, EmbeddingProvider } from "./embedding";
 import { logModelCall } from "../telemetry/queue";
 
 export interface OpenAICompatibleConfig {
@@ -165,12 +165,65 @@ export class OpenAICompatibleLLM implements LLMProvider {
   }
 }
 
+/** MiniMax embedding (embo-01) uses native body/response, not OpenAI shape. */
+function isMiniMaxEmbeddingHost(baseURL: string): boolean {
+  const u = baseURL.toLowerCase();
+  return (
+    u.includes("minimax.io") ||
+    u.includes("minimaxi.com") ||
+    u.includes("minimax.chat")
+  );
+}
+
+/**
+ * Extract a single embedding vector from OpenAI-compatible or MiniMax-native responses.
+ * OpenAI: { data: [{ embedding: number[] }] }
+ * MiniMax: { vectors: number[][], base_resp: { status_code } }
+ */
+export function extractEmbeddingVector(
+  json: Record<string, unknown>
+): number[] | null {
+  // MiniMax error envelope
+  const baseResp = json.base_resp as
+    | { status_code?: number; status_msg?: string }
+    | undefined;
+  if (baseResp && baseResp.status_code != null && baseResp.status_code !== 0) {
+    throw new Error(
+      `MiniMax embedding error ${baseResp.status_code}: ${baseResp.status_msg || "unknown"}`
+    );
+  }
+
+  // OpenAI / SiliconFlow / Zhipu
+  const data = json.data;
+  if (Array.isArray(data) && data[0] && typeof data[0] === "object") {
+    const emb = (data[0] as { embedding?: unknown }).embedding;
+    if (Array.isArray(emb) && emb.every((x) => typeof x === "number")) {
+      return emb as number[];
+    }
+  }
+
+  // MiniMax native: vectors: number[][]
+  const vectors = json.vectors;
+  if (Array.isArray(vectors) && Array.isArray(vectors[0])) {
+    const emb = vectors[0] as unknown[];
+    if (emb.every((x) => typeof x === "number")) return emb as number[];
+  }
+
+  // Rare: top-level embedding
+  if (Array.isArray(json.embedding) && (json.embedding as unknown[]).every((x) => typeof x === "number")) {
+    return json.embedding as number[];
+  }
+
+  return null;
+}
+
 export class OpenAICompatibleEmbedding implements EmbeddingProvider {
   private baseURL: string;
   private apiKey: string;
   private model: string;
   private dimensions?: number;
   private sendDimensionsParameter: boolean;
+  private miniMax: boolean;
 
   constructor(config: OpenAICompatibleEmbeddingConfig) {
     this.baseURL = normalizeBaseURL(config.baseURL);
@@ -178,16 +231,26 @@ export class OpenAICompatibleEmbedding implements EmbeddingProvider {
     this.model = config.model;
     this.dimensions = config.dimensions;
     this.sendDimensionsParameter = config.sendDimensionsParameter !== false;
+    this.miniMax = isMiniMaxEmbeddingHost(this.baseURL);
   }
 
-  async embed(text: string): Promise<number[]> {
+  async embed(text: string, options: EmbedOptions = {}): Promise<number[]> {
     const started = Date.now();
-    const body: Record<string, unknown> = {
-      model: this.model,
-      input: text,
-    };
+    // MiniMax embo-01: texts + type (db|query), not OpenAI input
+    const body: Record<string, unknown> = this.miniMax
+      ? {
+          model: this.model || "embo-01",
+          texts: [text],
+          type: options.purpose === "query" ? "query" : "db",
+        }
+      : {
+          model: this.model,
+          input: text,
+        };
     // Only OpenAI / some Qwen models support dimensions — SiliconFlow BGE rejects it.
+    // MiniMax native API does not take dimensions.
     if (
+      !this.miniMax &&
       this.sendDimensionsParameter &&
       this.dimensions != null &&
       this.dimensions > 0
@@ -207,16 +270,21 @@ export class OpenAICompatibleEmbedding implements EmbeddingProvider {
 
       if (!response.ok) {
         const errBody = await response.text().catch(() => "");
-        throw new Error(`Embedding error ${response.status}: ${errBody.slice(0, 200)}`);
+        throw new Error(`Embedding error ${response.status}: ${errBody.slice(0, 280)}`);
       }
 
-      const json = (await response.json()) as {
-        data?: { embedding?: number[] }[];
+      const json = (await response.json()) as Record<string, unknown> & {
         usage?: { prompt_tokens?: number; total_tokens?: number };
       };
-      const embedding = json.data?.[0]?.embedding;
+      const embedding = extractEmbeddingVector(json);
       if (!Array.isArray(embedding)) {
-        throw new Error("Embedding response missing data[0].embedding");
+        const keys = Object.keys(json).slice(0, 12).join(",");
+        throw new Error(
+          `Embedding response missing vector (expected data[0].embedding or vectors[0]; keys=${keys}). ` +
+            (this.miniMax
+              ? "MiniMax 需用原生格式 texts/type；若仍失败请改用硅基流动 BGE。"
+              : "检查模型是否支持 /embeddings。")
+        );
       }
       if (this.dimensions != null && embedding.length !== this.dimensions) {
         throw new Error(
