@@ -57,6 +57,7 @@ import {
   rewriteRequestPublicOrigin,
 } from "./oauth/public-origin";
 import { hardenOAuthResponse, oauthMethodProbe } from "./oauth/harden";
+import { readPublicUrl, siteConfigJson } from "./config/site";
 
 export interface Env {
   DB: D1Database;
@@ -74,11 +75,14 @@ export interface Env {
   /** Required with EMBEDDING_PROVIDER=local-hash-dev for smoke tests only. */
   ALLOW_DEV_EMBEDDING?: string;
   /**
-   * Public site origin for OAuth metadata (e.g. https://agent.mtzs.cloud).
-   * Required behind reverse proxies so ChatGPT sees https issuer, not http://host:443.
+   * Public site origin from .env (PUBLIC_URL / PUBLIC_BASE_URL / SITE_URL / BASE_URL).
+   * Example: https://your.domain — no trailing slash.
+   * Required behind reverse proxies so OAuth issuer is https, not http://host:443.
    */
   PUBLIC_URL?: string;
   PUBLIC_BASE_URL?: string;
+  SITE_URL?: string;
+  BASE_URL?: string;
   /** OpenAI-compatible chat API (DeepSeek / MiniMax / MiMo / OpenAI). */
   LLM_BASE_URL?: string;
   LLM_API_KEY?: string;
@@ -2108,6 +2112,23 @@ const defaultHandler = {
 
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: CORS_HEADERS });
+    }
+
+    // GET /config — public site URLs for UI / deployers (no secrets)
+    if (
+      (url.pathname === "/config" || url.pathname === "/config.json") &&
+      (request.method === "GET" || request.method === "HEAD")
+    ) {
+      const origin =
+        readPublicUrl(env) ||
+        resolvePublicOrigin(request, env);
+      const cfg = siteConfigJson(origin);
+      return json({
+        ok: true,
+        ...cfg,
+        // hint for operators
+        envKeys: ["PUBLIC_URL", "PUBLIC_BASE_URL", "SITE_URL", "BASE_URL"],
+      });
     }
 
     // POST /capture

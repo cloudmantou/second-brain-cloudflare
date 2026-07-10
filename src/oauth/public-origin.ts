@@ -2,27 +2,20 @@
  * Resolve the public HTTPS origin for OAuth metadata and redirects.
  *
  * Behind Nginx, Request.url is often wrong (`http://host:443`). Prefer:
- * 1. PUBLIC_URL / PUBLIC_BASE_URL env
+ * 1. PUBLIC_URL / PUBLIC_BASE_URL / SITE_URL / BASE_URL env (global site config)
  * 2. X-Forwarded-Proto + X-Forwarded-Host / Host (strip default ports)
  */
 
-export interface PublicOriginEnv {
-  PUBLIC_URL?: string;
-  PUBLIC_BASE_URL?: string;
-}
+import { readPublicUrl, type PublicUrlEnv } from "../config/site";
+
+export type PublicOriginEnv = PublicUrlEnv;
 
 export function resolvePublicOrigin(
   request: Request,
   env: PublicOriginEnv = {}
 ): string {
-  const configured = (env.PUBLIC_URL || env.PUBLIC_BASE_URL || "").trim();
-  if (configured) {
-    try {
-      return new URL(configured).origin;
-    } catch {
-      /* fall through */
-    }
-  }
+  const configured = readPublicUrl(env);
+  if (configured) return configured;
 
   const url = new URL(request.url);
   const xfProto = headerFirst(request, "x-forwarded-proto");

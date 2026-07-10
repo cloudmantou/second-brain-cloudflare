@@ -13,7 +13,7 @@
  *     --vectorize             (call embed via running server if BASE_URL set)
  *
  *   # Against running server:
- *   BASE_URL=https://agent.mtzs.cloud AUTH_TOKEN=... \
+ *   BASE_URL=https://your.domain AUTH_TOKEN=... \
  *     npx tsx scripts/import-json.ts ./export.json --http
  */
 

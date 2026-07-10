@@ -145,6 +145,7 @@ async function main() {
         urlPath.startsWith("/import") ||
         urlPath.startsWith("/export") ||
         urlPath.startsWith("/analytics") ||
+        urlPath.startsWith("/config") ||
         urlPath.startsWith("/.well-known");
 
       if (!isApi) {
@@ -171,19 +172,20 @@ async function main() {
 
   await app.listen({ port: PORT, host: HOST });
   const displayHost = HOST === "0.0.0.0" ? "127.0.0.1" : HOST;
-  const publicUrl = process.env.PUBLIC_URL || process.env.PUBLIC_BASE_URL || "";
+  const { readPublicUrlFromProcess, siteConfigJson } = await import("./config/site");
+  const publicUrl = readPublicUrlFromProcess();
+  const site = siteConfigJson(publicUrl);
   console.log(`Second Brain self-host listening on http://${displayHost}:${PORT}`);
   console.log(`  database: ${databasePath}`);
-  console.log(`  MCP:      http://${displayHost}:${PORT}/mcp`);
+  console.log(`  MCP local: http://${displayHost}:${PORT}/mcp`);
   if (publicUrl) {
-    console.log(`  public:   ${publicUrl.replace(/\/+$/, "")}`);
-    console.log(
-      `  OAuth:    ${publicUrl.replace(/\/+$/, "")}/.well-known/oauth-authorization-server`
-    );
+    console.log(`  PUBLIC_URL: ${site.publicUrl}`);
+    console.log(`  MCP public: ${site.mcpUrl}`);
+    console.log(`  OAuth meta: ${site.oauthAuthorizationServer}`);
   } else {
     console.warn(
-      "[warn] PUBLIC_URL is not set. ChatGPT/MCP OAuth discovery may advertise http://host:443. " +
-        "Set PUBLIC_URL=https://your.domain in .env"
+      "[warn] PUBLIC_URL is not set. Add to .env for ChatGPT/MCP OAuth:\n" +
+        "       PUBLIC_URL=https://your.domain.example"
     );
   }
   console.log(

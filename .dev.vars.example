@@ -3,6 +3,9 @@
 
 AUTH_TOKEN=change-me
 
+# Public site URL (OAuth / absolute links). Example: https://your.domain
+# PUBLIC_URL=https://your.domain.example
+
 # LLM — OpenAI-compatible (DeepSeek / MiniMax / MiMo / OpenAI)
 # LLM_BASE_URL=https://api.deepseek.com/v1
 # LLM_API_KEY=sk-...

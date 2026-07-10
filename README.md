@@ -198,7 +198,17 @@ a compatible client will:
 
 This means your authentication token does not need to be placed in the client configuration or included in the connector URL.
 
-**Self-host behind Nginx:** set `PUBLIC_URL=https://YOUR-DOMAIN` in `.env`, and proxy **all** of these paths to the Node process (do not reserve `/.well-known` only for ACME):
+**Self-host — set your domain once in `.env`:**
+
+```bash
+# Required for ChatGPT / MCP OAuth absolute URLs (no trailing slash)
+PUBLIC_URL=https://YOUR-DOMAIN
+```
+
+Aliases (first non-empty wins): `PUBLIC_URL` | `PUBLIC_BASE_URL` | `SITE_URL` | `BASE_URL`.  
+Inspect runtime config: `GET /config` (public, no secrets).
+
+**Behind Nginx:** proxy **all** of these paths to the Node process (do not reserve `/.well-known` only for ACME):
 
 ```nginx
 location ^~ /.well-known/oauth- {

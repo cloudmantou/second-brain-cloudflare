@@ -10,6 +10,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Env } from "../index";
 import worker from "../index";
 import { createExecutionContext } from "./env";
+import { readPublicUrlFromProcess } from "../config/site";
 
 const HOP_BY_HOP = new Set([
   "transfer-encoding",
@@ -24,15 +25,10 @@ const HOP_BY_HOP = new Set([
 ]);
 
 function buildRequestUrl(req: FastifyRequest): string {
-  // Prefer explicit public origin (ChatGPT OAuth issuer must be https://domain)
-  const configured = (process.env.PUBLIC_URL || process.env.PUBLIC_BASE_URL || "").trim();
+  // Prefer PUBLIC_URL from .env — single global site domain for OAuth issuer
+  const configured = readPublicUrlFromProcess();
   if (configured) {
-    try {
-      const origin = new URL(configured).origin;
-      return `${origin}${req.url}`;
-    } catch {
-      /* fall through */
-    }
+    return `${configured}${req.url}`;
   }
 
   const xfHost = req.headers["x-forwarded-host"];
