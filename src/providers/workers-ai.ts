@@ -13,20 +13,33 @@ async function readCfSseText(stream: ReadableStream): Promise<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let text = "";
+  let carry = "";
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      decoder.decode(value).split("\n").forEach((line) => {
+      carry += decoder.decode(value, { stream: true });
+      const lines = carry.split("\n");
+      carry = lines.pop() ?? "";
+      for (const line of lines) {
         if (line.startsWith("data: ") && !line.includes("[DONE]")) {
           try {
             const d = JSON.parse(line.slice(6));
             if (d.response) text += d.response;
           } catch {
-            /* ignore partial chunks */
+            /* ignore incomplete JSON fragments */
           }
         }
-      });
+      }
+    }
+    carry += decoder.decode();
+    if (carry.startsWith("data: ") && !carry.includes("[DONE]")) {
+      try {
+        const d = JSON.parse(carry.slice(6));
+        if (d.response) text += d.response;
+      } catch {
+        /* ignore */
+      }
     }
   } finally {
     reader.releaseLock();

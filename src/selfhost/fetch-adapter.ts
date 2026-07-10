@@ -1,7 +1,8 @@
 /**
- * Convert a Fastify request into a Fetch API Request and write the Response back.
+ * Convert a Fastify request into a Fetch API Request and stream the Response back.
  */
 
+import { Readable } from "node:stream";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Env } from "../index";
 import worker from "../index";
@@ -29,7 +30,6 @@ export async function handleWithWorker(
     }
   }
 
-  // Avoid Node content-length mismatches when body is re-serialized.
   headers.delete("content-length");
 
   let body: BodyInit | undefined;
@@ -59,11 +59,16 @@ export async function handleWithWorker(
 
   reply.status(response.status);
   response.headers.forEach((value, key) => {
-    // Fastify manages these; hop-by-hop headers are skipped.
     if (key.toLowerCase() === "transfer-encoding") return;
     reply.header(key, value);
   });
 
-  const buf = Buffer.from(await response.arrayBuffer());
-  reply.send(buf);
+  if (!response.body) {
+    reply.send();
+    return;
+  }
+
+  // Stream SSE / large bodies instead of buffering the entire response.
+  const nodeStream = Readable.fromWeb(response.body as unknown as import("stream/web").ReadableStream);
+  reply.send(nodeStream);
 }

@@ -13,12 +13,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
 import dotenv from "dotenv";
-import worker from "./index";
+import worker, { initializeDatabase } from "./index";
 import {
   createExecutionContext,
   createSelfhostEnv,
 } from "./selfhost/env";
 import { handleWithWorker } from "./selfhost/fetch-adapter";
+import { getEffectiveModelSettings } from "./settings/store";
+import { isDevLocalProvider } from "./settings/model-settings";
 
 dotenv.config();
 
@@ -56,22 +58,34 @@ async function tryServePublic(
 async function main() {
   const { env, databasePath } = createSelfhostEnv();
 
-  // Eager schema init (entries table + migrations via /count → initializeDatabase)
-  const ctx = createExecutionContext();
-  await worker.fetch(
-    new Request("http://localhost/count", {
-      headers: { Authorization: `Bearer ${env.AUTH_TOKEN}` },
-    }),
-    env,
-    ctx
-  );
+  // Await schema init before accepting traffic (fixes empty-DB race).
+  await initializeDatabase(env);
+
+  const { effective } = await getEffectiveModelSettings(env);
+  const embConfigured =
+    Boolean(effective.embedding.baseURL && effective.embedding.apiKey) ||
+    (isDevLocalProvider(effective.embedding.provider) &&
+      (env.ALLOW_DEV_EMBEDDING === "1" || env.ALLOW_DEV_EMBEDDING === "true")) ||
+    Boolean(env.AI && env.SELFHOST !== "1");
+
+  if (!embConfigured) {
+    console.warn(
+      "[warn] Production embedding is not configured. Capture/recall will fail until " +
+        "you set EMBEDDING_* or configure Settings → Models & API. " +
+        "For smoke tests only: ALLOW_DEV_EMBEDDING=true EMBEDDING_PROVIDER=local-hash-dev"
+    );
+  }
+  if (isDevLocalProvider(effective.embedding.provider)) {
+    console.warn(
+      "[warn] DEV local-hash embeddings are active. Do not use for real memory corpora."
+    );
+  }
 
   const app = Fastify({
     logger: true,
     bodyLimit: 10 * 1024 * 1024,
   });
 
-  // Preserve raw body for OAuth form posts
   app.addContentTypeParser(
     "application/x-www-form-urlencoded",
     { parseAs: "buffer" },
@@ -95,13 +109,18 @@ async function main() {
     }
   );
 
-  app.get("/health", async () => ({
-    ok: true,
-    mode: "selfhost",
-    database: databasePath,
-    llm: Boolean(env.LLM_BASE_URL && env.LLM_API_KEY),
-    embedding: Boolean(env.EMBEDDING_BASE_URL && env.EMBEDDING_API_KEY),
-  }));
+  app.get("/health", async () => {
+    const { effective: eff } = await getEffectiveModelSettings(env);
+    return {
+      ok: true,
+      mode: "selfhost",
+      database: databasePath,
+      llm: Boolean(eff.llm.baseURL && eff.llm.apiKey),
+      embedding: Boolean(eff.embedding.baseURL && eff.embedding.apiKey),
+      embeddingProvider: eff.embedding.provider,
+      devEmbedding: isDevLocalProvider(eff.embedding.provider),
+    };
+  });
 
   app.all("/*", async (req, reply) => {
     if (req.method === "GET" || req.method === "HEAD") {
@@ -135,7 +154,6 @@ async function main() {
     await handleWithWorker(req, reply, env);
   });
 
-  // Nightly compression — check hourly; runs during 01:00 UTC like wrangler cron
   setInterval(() => {
     if (new Date().getUTCHours() !== 1) return;
     worker
@@ -149,7 +167,7 @@ async function main() {
   console.log(`  database: ${databasePath}`);
   console.log(`  MCP:      http://${displayHost}:${PORT}/mcp`);
   console.log(
-    `  LLM:      ${env.LLM_BASE_URL ? env.LLM_BASE_URL : "(not set — configure LLM_BASE_URL)"}`
+    `  LLM:      ${effective.llm.baseURL || env.LLM_BASE_URL || "(configure in Settings → Models)"}`
   );
 }
 

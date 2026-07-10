@@ -30,7 +30,7 @@ describe("model-settings helpers", () => {
       provider: "deepseek",
       baseURL: "https://api.deepseek.com/v1",
       apiKey: "stored-key",
-      model: "deepseek-chat",
+      model: "deepseek-v4-flash",
     };
     const merged = mergeModelSettings(stored, {
       LLM_BASE_URL: "https://env.example/v1",
@@ -39,6 +39,11 @@ describe("model-settings helpers", () => {
     });
     expect(merged.llm.apiKey).toBe("stored-key");
     expect(merged.llm.baseURL).toContain("deepseek");
+  });
+
+  it("self-host does not auto-enable local hash without ALLOW_DEV_EMBEDDING", () => {
+    const merged = mergeModelSettings(null, { SELFHOST: "1" });
+    expect(merged.embedding.provider).toBe("none");
   });
 
   it("patch keeps previous apiKey when masked", () => {

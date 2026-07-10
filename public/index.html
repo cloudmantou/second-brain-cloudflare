@@ -3410,7 +3410,7 @@
 
       function onEmbPresetChange() {
         const id = document.getElementById('emb-provider').value
-        const local = id === 'local'
+        const local = id === 'local' || id === 'local-hash' || id === 'local-hash-dev'
         ;['emb-base-wrap', 'emb-model-wrap', 'emb-key-wrap'].forEach((wid) => {
           const el = document.getElementById(wid)
           if (el) el.style.display = local ? 'none' : ''
@@ -3435,11 +3435,18 @@
         const emb = data.status?.embedding || 'unconfigured'
         const src = data.status?.source || 'default'
         const pill = (label, ok) =>
-          `<span class="models-pill ${ok ? 'ok' : label.includes('unconfigured') ? 'warn' : ''}">${label}</span>`
-        box.innerHTML =
+          `<span class="models-pill ${ok ? 'ok' : label.includes('unconfigured') || label.includes('DEV') || label.includes('reindex') ? 'warn' : ''}">${label}</span>`
+        let html =
           pill('LLM: ' + llm, llm === 'openai-compatible' || llm === 'workers-ai') +
-          pill('Embed: ' + emb, emb !== 'unconfigured') +
+          pill('Embed: ' + emb, emb === 'openai-compatible' || emb === 'workers-ai') +
           pill('Source: ' + src, src === 'control-plane' || src === 'mixed')
+        if (data.status?.devEmbeddingWarning) {
+          html += pill('DEV hash vectors — not for production', false)
+        }
+        if (data.status?.reindexRequired) {
+          html += pill('reindex required', false)
+        }
+        box.innerHTML = html
       }
 
       async function openModelsSettings() {
@@ -3496,19 +3503,8 @@
         saveBtn.disabled = true
         try {
           const body = {
-            llm: {
-              provider: document.getElementById('llm-provider').value,
-              baseURL: document.getElementById('llm-base').value.trim(),
-              model: document.getElementById('llm-model').value.trim(),
-              apiKey: document.getElementById('llm-key').value,
-            },
-            embedding: {
-              provider: document.getElementById('emb-provider').value,
-              baseURL: document.getElementById('emb-base').value.trim(),
-              model: document.getElementById('emb-model').value.trim(),
-              dimensions: parseInt(document.getElementById('emb-dim').value, 10) || 384,
-              apiKey: document.getElementById('emb-key').value,
-            },
+            ...collectModelFormBody(),
+            acceptEmbeddingFingerprint: true,
           }
           const res = await fetch(`${WORKER_URL}/settings/models`, {
             method: 'PUT',
@@ -3529,7 +3525,12 @@
             ? 'Saved · enter new key to replace'
             : 'API key'
           if (data.settings) renderModelsStatus(data.settings)
-          setModelsMsg('Saved. New requests use this config.', 'ok')
+          let msg = 'Saved. New requests use this config.'
+          if (data.warning) msg += ' ' + data.warning
+          if (data.embeddingFingerprintChanged) {
+            msg += ' Tip: POST /settings/models/reindex then re-vectorize.'
+          }
+          setModelsMsg(msg, data.warning ? 'error' : 'ok')
           return true
         } catch (e) {
           setModelsMsg(String(e.message || e), 'error')
@@ -3539,27 +3540,44 @@
         }
       }
 
+      function collectModelFormBody() {
+        return {
+          llm: {
+            provider: document.getElementById('llm-provider').value,
+            baseURL: document.getElementById('llm-base').value.trim(),
+            model: document.getElementById('llm-model').value.trim(),
+            apiKey: document.getElementById('llm-key').value,
+          },
+          embedding: {
+            provider: document.getElementById('emb-provider').value,
+            baseURL: document.getElementById('emb-base').value.trim(),
+            model: document.getElementById('emb-model').value.trim(),
+            dimensions: parseInt(document.getElementById('emb-dim').value, 10) || 384,
+            apiKey: document.getElementById('emb-key').value,
+          },
+        }
+      }
+
       async function testModelSettings(target) {
-        setModelsMsg('Testing ' + target + '…')
+        // Probe candidate config only — does NOT save (avoid locking in bad keys).
+        setModelsMsg('Testing ' + target + ' (not saved)…')
         const btn = document.getElementById(target === 'embedding' ? 'emb-test-btn' : 'llm-test-btn')
         btn.disabled = true
         try {
-          const saved = await saveModelSettings()
-          if (!saved) return
           const res = await fetch(`${WORKER_URL}/settings/models/test`, {
             method: 'POST',
             headers: {
               Authorization: `Bearer ${AUTH_TOKEN}`,
               'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ target }),
+            body: JSON.stringify({ target, ...collectModelFormBody() }),
           })
           const data = await res.json()
           if (!data.ok) throw new Error(data.error || 'Test failed')
           if (target === 'embedding') {
-            setModelsMsg('Embedding OK · dim=' + data.dimensions, 'ok')
+            setModelsMsg('Embedding OK · dim=' + data.dimensions + ' · not saved yet', 'ok')
           } else {
-            setModelsMsg('Chat OK · reply=' + JSON.stringify(data.reply), 'ok')
+            setModelsMsg('Chat OK · reply=' + JSON.stringify(data.reply) + ' · not saved yet', 'ok')
           }
         } catch (e) {
           setModelsMsg(String(e.message || e), 'error')

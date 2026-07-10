@@ -44,12 +44,20 @@ describe("createLLM / createEmbedding", () => {
     expect(emb).toBeInstanceOf(OpenAICompatibleEmbedding);
   });
 
-  it("uses local hash embedding on self-host without embed API", async () => {
+  it("uses local hash only when explicitly allowed for dev", async () => {
     const { LocalHashEmbedding } = await import("../../src/providers");
-    const emb = await createEmbedding({ SELFHOST: "1" });
+    const emb = await createEmbedding({
+      SELFHOST: "1",
+      EMBEDDING_PROVIDER: "local-hash-dev",
+      ALLOW_DEV_EMBEDDING: "true",
+    });
     expect(emb).toBeInstanceOf(LocalHashEmbedding);
     const v = await emb.embed("hello world");
     expect(v).toHaveLength(384);
+  });
+
+  it("rejects bare self-host without real embedding or ALLOW_DEV_EMBEDDING", async () => {
+    await expect(createEmbedding({ SELFHOST: "1" })).rejects.toThrow(/not configured/i);
   });
 });
 

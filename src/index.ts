@@ -10,13 +10,17 @@ import { z } from "zod";
 import { createEmbedding, createLLM } from "./providers";
 import {
   applyModelSettingsPatch,
+  embeddingFingerprintOf,
   emptyModelSettings,
+  isDevLocalProvider,
   toPublicModelSettings,
+  type ModelSettingsPatchBody,
 } from "./settings/model-settings";
 import {
   ensureSettingsTable,
   getEffectiveModelSettings,
   loadStoredModelSettings,
+  overlayProviderEnvFromSettings,
   saveStoredModelSettings,
 } from "./settings/store";
 
@@ -31,12 +35,15 @@ export interface Env {
   AUTH_TOKEN: string;
   OAUTH_KV: KVNamespace;
   VECTORIZE_GRACE_MS?: string;
-  /** Set on Node self-host (`1`) to enable local hash embeddings fallback. */
+  /** Set on Node self-host (`1`). */
   SELFHOST?: string;
+  /** Required with EMBEDDING_PROVIDER=local-hash-dev for smoke tests only. */
+  ALLOW_DEV_EMBEDDING?: string;
   /** OpenAI-compatible chat API (DeepSeek / MiniMax / MiMo / OpenAI). */
   LLM_BASE_URL?: string;
   LLM_API_KEY?: string;
   LLM_MODEL?: string;
+  LLM_EXTRA_BODY?: string;
   /** OpenAI-compatible embeddings API (or TEI). Independent of LLM. */
   EMBEDDING_BASE_URL?: string;
   EMBEDDING_API_KEY?: string;
@@ -161,7 +168,15 @@ export function withKind(tags: string[], kind: MemoryKind): string[] {
 
 // ─── Runtime state ────────────────────────────────────────────────────────────
 
-let dbReady = false;
+/** Single-flight DB init — concurrent first requests share one Promise. */
+let dbInitPromise: Promise<void> | null = null;
+
+export function ensureDatabase(env: Env): Promise<void> {
+  return (dbInitPromise ??= initializeDatabase(env).catch((err) => {
+    dbInitPromise = null;
+    throw err;
+  }));
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -246,14 +261,10 @@ async function embed(text: string, env: Env): Promise<number[]> {
 
 // ─── Database initialization ──────────────────────────────────────────────────
 
-async function initializeDatabase(env: Env): Promise<void> {
-  try {
-    await env.DB.exec(`CREATE TABLE IF NOT EXISTS entries (id TEXT PRIMARY KEY, content TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]', source TEXT NOT NULL DEFAULT 'api', created_at INTEGER NOT NULL, vector_ids TEXT NOT NULL DEFAULT '[]')`);
-    await env.DB.exec(`CREATE INDEX IF NOT EXISTS idx_entries_created_at ON entries(created_at DESC)`);
-    await env.DB.exec(`CREATE INDEX IF NOT EXISTS idx_entries_source ON entries(source)`);
-  } catch (e) {
-    console.error("Database initialization error (non-fatal):", e);
-  }
+export async function initializeDatabase(env: Env): Promise<void> {
+  await env.DB.exec(`CREATE TABLE IF NOT EXISTS entries (id TEXT PRIMARY KEY, content TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]', source TEXT NOT NULL DEFAULT 'api', created_at INTEGER NOT NULL, vector_ids TEXT NOT NULL DEFAULT '[]')`);
+  await env.DB.exec(`CREATE INDEX IF NOT EXISTS idx_entries_created_at ON entries(created_at DESC)`);
+  await env.DB.exec(`CREATE INDEX IF NOT EXISTS idx_entries_source ON entries(source)`);
   for (const alter of [
     `ALTER TABLE entries ADD COLUMN recall_count INTEGER DEFAULT 0`,
     `ALTER TABLE entries ADD COLUMN importance_score INTEGER DEFAULT 0`,
@@ -262,9 +273,7 @@ async function initializeDatabase(env: Env): Promise<void> {
   ]) {
     try { await env.DB.exec(alter); } catch { /* column already exists — no-op */ }
   }
-  try { await ensureSettingsTable(env.DB); } catch (e) {
-    console.error("Settings table init error (non-fatal):", e);
-  }
+  await ensureSettingsTable(env.DB);
 }
 
 // ─── Duplicate detection ──────────────────────────────────────────────────────
@@ -1049,7 +1058,7 @@ export async function compressTag(
 }
 
 async function runNightlyCompression(env: Env, ctx: ExecutionContext): Promise<void> {
-  await initializeDatabase(env);
+  await ensureDatabase(env);
 
   const { results } = await env.DB.prepare(`
     SELECT value as tag, COUNT(*) as count
@@ -1827,9 +1836,7 @@ function buildMcpServer(env: Env, ctx: ExecutionContext): McpServer {
 
 const apiHandler = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    if (!dbReady) {
-      ctx.waitUntil(initializeDatabase(env).then(() => { dbReady = true; }));
-    }
+    await ensureDatabase(env);
     const server = buildMcpServer(env, ctx);
     return createMcpHandler(server)(request, env, ctx);
   },
@@ -1872,11 +1879,7 @@ const defaultHandler = {
       return new Response(loginHtml(), { headers: { "Content-Type": "text/html" } });
     }
 
-    if (!dbReady) {
-      ctx.waitUntil(
-        initializeDatabase(env).then(() => { dbReady = true; })
-      );
-    }
+    await ensureDatabase(env);
 
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: CORS_HEADERS });
@@ -2294,7 +2297,6 @@ const defaultHandler = {
     }
 
     // ── Control plane: model settings ───────────────────────────────────────
-    // GET /settings/models — public view (keys masked) + presets + status
     if (url.pathname === "/settings/models" && request.method === "GET") {
       const authErr = requireAuth(request, env);
       if (authErr) return authErr;
@@ -2306,6 +2308,8 @@ const defaultHandler = {
           hasStored: Boolean(stored),
           hasEnvLlm: Boolean(env.LLM_BASE_URL && env.LLM_API_KEY),
           hasEnvEmbed: Boolean(env.EMBEDDING_BASE_URL && env.EMBEDDING_API_KEY),
+          allowDevEmbedding:
+            env.ALLOW_DEV_EMBEDDING === "1" || env.ALLOW_DEV_EMBEDDING === "true",
         })
       );
     }
@@ -2315,7 +2319,7 @@ const defaultHandler = {
       const authErr = requireAuth(request, env);
       if (authErr) return authErr;
 
-      let body: { llm?: Record<string, unknown>; embedding?: Record<string, unknown> };
+      let body: ModelSettingsPatchBody & { force?: boolean };
       try {
         body = await request.json();
       } catch {
@@ -2323,28 +2327,60 @@ const defaultHandler = {
       }
 
       const previous =
-        (await loadStoredModelSettings(env.DB)) ??
-        mergeFromEnvOnly(env);
-      const next = applyModelSettingsPatch(previous, body as any);
+        (await loadStoredModelSettings(env.DB)) ?? mergeFromEnvOnly(env);
+      const next = applyModelSettingsPatch(previous, body);
+
+      if (
+        isDevLocalProvider(next.embedding.provider) &&
+        env.ALLOW_DEV_EMBEDDING !== "1" &&
+        env.ALLOW_DEV_EMBEDDING !== "true"
+      ) {
+        return json(
+          {
+            ok: false,
+            error:
+              "local-hash-dev requires ALLOW_DEV_EMBEDDING=true. Do not use for production memory.",
+          },
+          400
+        );
+      }
+
+      const prevFp = previous.embeddingFingerprint || embeddingFingerprintOf(previous.embedding);
+      const nextFp = embeddingFingerprintOf(next.embedding);
+      const fingerprintChanged = prevFp !== nextFp && Boolean(previous.embeddingFingerprint || previous.embedding.model);
+
+      // First save of a real embedding config: stamp fingerprint
+      if (!next.embeddingFingerprint && !isDevLocalProvider(next.embedding.provider)) {
+        next.embeddingFingerprint = nextFp;
+      } else if (body.acceptEmbeddingFingerprint) {
+        next.embeddingFingerprint = nextFp;
+      }
+
       await saveStoredModelSettings(env.DB, next);
 
       const { effective, stored } = await getEffectiveModelSettings(env);
       return json({
         ok: true,
+        embeddingFingerprintChanged: fingerprintChanged,
+        warning: fingerprintChanged
+          ? "Embedding provider/model/dimensions changed. Existing vectors are incompatible until reindex. POST /settings/models/reindex then vectorize-pending."
+          : undefined,
         settings: toPublicModelSettings(effective, {
           hasStored: Boolean(stored),
           hasEnvLlm: Boolean(env.LLM_BASE_URL && env.LLM_API_KEY),
           hasEnvEmbed: Boolean(env.EMBEDDING_BASE_URL && env.EMBEDDING_API_KEY),
+          allowDevEmbedding:
+            env.ALLOW_DEV_EMBEDDING === "1" || env.ALLOW_DEV_EMBEDDING === "true",
         }),
       });
     }
 
-    // POST /settings/models/test — probe LLM or embedding with current effective config
+    // POST /settings/models/test — probe candidate config WITHOUT saving
     if (url.pathname === "/settings/models/test" && request.method === "POST") {
       const authErr = requireAuth(request, env);
       if (authErr) return authErr;
 
-      let body: { target?: string };
+      let body: ModelSettingsPatchBody & { target?: string };
       try {
         body = await request.json();
       } catch {
@@ -2353,28 +2389,85 @@ const defaultHandler = {
       const target = body.target === "embedding" ? "embedding" : "llm";
 
       try {
+        const previous =
+          (await loadStoredModelSettings(env.DB)) ?? mergeFromEnvOnly(env);
+        const candidate = applyModelSettingsPatch(previous, body);
+        // Empty candidate keys fall back to previous via patch; overlay for probe
+        const probeEnv = overlayProviderEnvFromSettings(env, candidate);
+        // Don't require DB resolve for candidate probe (avoid clobbering with stored)
+        const { DB: _db, ...probeWithoutDb } = probeEnv as Env & { DB?: D1Database };
+
         if (target === "embedding") {
-          const emb = await createEmbedding(env);
+          if (
+            isDevLocalProvider(candidate.embedding.provider) &&
+            env.ALLOW_DEV_EMBEDDING !== "1" &&
+            env.ALLOW_DEV_EMBEDDING !== "true"
+          ) {
+            throw new Error("local-hash-dev requires ALLOW_DEV_EMBEDDING=true");
+          }
+          const emb = await createEmbedding(probeWithoutDb as Env);
           const vector = await emb.embed("second brain settings probe");
           return json({
             ok: true,
             target,
             dimensions: vector.length,
             sample: vector.slice(0, 3),
+            saved: false,
           });
         }
-        const llm = await createLLM(env);
+        const llm = await createLLM(probeWithoutDb as Env);
         const reply = await llm.chat(
-          [{ role: "user", content: 'Reply with exactly the word: ok' }],
+          [{ role: "user", content: "Reply with exactly the word: ok" }],
           { max_tokens: 16, temperature: 0 }
         );
-        return json({ ok: true, target, reply: reply.trim().slice(0, 200) });
+        return json({
+          ok: true,
+          target,
+          reply: reply.trim().slice(0, 200),
+          saved: false,
+        });
       } catch (e) {
         return json(
-          { ok: false, target, error: e instanceof Error ? e.message : String(e) },
+          { ok: false, target, error: e instanceof Error ? e.message : String(e), saved: false },
           400
         );
       }
+    }
+
+    // POST /settings/models/reindex — clear vectors + reset vector_ids for full re-embed
+    if (url.pathname === "/settings/models/reindex" && request.method === "POST") {
+      const authErr = requireAuth(request, env);
+      if (authErr) return authErr;
+
+      const { effective, stored } = await getEffectiveModelSettings(env);
+      if (stored) {
+        stored.embeddingFingerprint = embeddingFingerprintOf(effective.embedding);
+        await saveStoredModelSettings(env.DB, stored);
+      }
+
+      // Clear local vector table when self-host adapter is present
+      let clearedVectors = 0;
+      try {
+        const clear = (env.VECTORIZE as any).clearAll;
+        if (typeof clear === "function") {
+          clearedVectors = await clear.call(env.VECTORIZE);
+        }
+      } catch (e) {
+        console.error("Vector clear failed:", e);
+      }
+
+      const update = await env.DB.prepare(
+        `UPDATE entries SET vector_ids = '[]'`
+      ).run();
+      const rows = (update as any)?.meta?.changes ?? 0;
+
+      return json({
+        ok: true,
+        clearedVectors,
+        entriesReset: rows,
+        next: "Call POST /vectorize-pending (or wait for capture re-embed) to rebuild vectors with the current embedding config.",
+        fingerprint: stored?.embeddingFingerprint ?? embeddingFingerprintOf(effective.embedding),
+      });
     }
 
     return new Response("Not found", { status: 404 });
@@ -2392,16 +2485,26 @@ function mergeFromEnvOnly(env: Env) {
       model: env.LLM_MODEL || "",
     };
   }
-  if (env.EMBEDDING_BASE_URL || env.EMBEDDING_API_KEY || env.EMBEDDING_PROVIDER === "local") {
+  if (env.EMBEDDING_BASE_URL || env.EMBEDDING_API_KEY) {
     base.embedding = {
-      provider: env.EMBEDDING_PROVIDER === "local" ? "local" : "custom",
+      provider: "custom",
       baseURL: env.EMBEDDING_BASE_URL || "",
       apiKey: env.EMBEDDING_API_KEY || "",
       model: env.EMBEDDING_MODEL || "",
       dimensions: parseInt(env.EMBEDDING_DIM || "384", 10) || 384,
     };
-  } else if (env.SELFHOST === "1" || env.SELFHOST === "true") {
-    base.embedding.provider = "local";
+    base.embeddingFingerprint = embeddingFingerprintOf(base.embedding);
+  } else if (
+    isDevLocalProvider(env.EMBEDDING_PROVIDER) &&
+    (env.ALLOW_DEV_EMBEDDING === "1" || env.ALLOW_DEV_EMBEDDING === "true")
+  ) {
+    base.embedding = {
+      provider: "local-hash-dev",
+      baseURL: "",
+      apiKey: "",
+      model: "local-hash",
+      dimensions: parseInt(env.EMBEDDING_DIM || "384", 10) || 384,
+    };
   }
   return base;
 }

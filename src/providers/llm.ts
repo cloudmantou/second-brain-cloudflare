@@ -14,6 +14,13 @@ export interface ChatOptions {
   max_tokens?: number;
   /** When true, Workers AI uses SSE; OpenAI-compatible may still buffer. */
   stream?: boolean;
+  /** Prefer JSON-only responses when the provider supports it. */
+  jsonMode?: boolean;
+  /**
+   * Extra fields merged into the OpenAI-compatible request body
+   * (e.g. `{ thinking: { type: "disabled" } }` for DeepSeek/MiniMax).
+   */
+  extraBody?: Record<string, unknown>;
 }
 
 export interface LLMProvider {

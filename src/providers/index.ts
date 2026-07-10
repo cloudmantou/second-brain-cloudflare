@@ -7,7 +7,11 @@
 import type { LLMProvider } from "./llm";
 import type { EmbeddingProvider } from "./embedding";
 import { LocalHashEmbedding } from "./local-embedding";
-import { OpenAICompatibleEmbedding, OpenAICompatibleLLM } from "./openai-compatible";
+import {
+  OpenAICompatibleEmbedding,
+  OpenAICompatibleLLM,
+  thinkingDisabledBody,
+} from "./openai-compatible";
 import { resolveProviderEnv } from "../settings/store";
 import {
   DEFAULT_WORKERS_EMBEDDING_MODEL,
@@ -31,50 +35,95 @@ export {
 export interface ProviderEnv {
   AI?: Ai;
   DB?: D1Database;
-  /** When "1"/"true", allow local hash embeddings if no embed API / Workers AI. */
   SELFHOST?: string;
+  ALLOW_DEV_EMBEDDING?: string;
   LLM_BASE_URL?: string;
   LLM_API_KEY?: string;
   LLM_MODEL?: string;
+  /** Optional JSON string of default extraBody for OpenAI-compatible chat. */
+  LLM_EXTRA_BODY?: string;
   EMBEDDING_BASE_URL?: string;
   EMBEDDING_API_KEY?: string;
   EMBEDDING_MODEL?: string;
-  /** "local" forces LocalHashEmbedding; default auto on self-host. */
+  /**
+   * Embedding mode:
+   * - unset / empty: require real provider or Workers AI
+   * - "local" | "local-hash-dev": only when ALLOW_DEV_EMBEDDING=true
+   */
   EMBEDDING_PROVIDER?: string;
   EMBEDDING_DIM?: string;
 }
 
+function parseExtraBody(raw?: string): Record<string, unknown> | undefined {
+  if (!raw?.trim()) return undefined;
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === "object" ? (v as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Providers that enable thinking by default — disable for short JSON tasks. */
+function defaultThinkingBody(model: string, baseURL: string): Record<string, unknown> | undefined {
+  const m = model.toLowerCase();
+  const u = baseURL.toLowerCase();
+  if (
+    m.includes("deepseek-v4") ||
+    m.includes("minimax-m") ||
+    u.includes("deepseek.com") ||
+    u.includes("minimax.io") ||
+    u.includes("minimax.chat")
+  ) {
+    return thinkingDisabledBody();
+  }
+  return undefined;
+}
+
 function buildLLM(env: ProviderEnv): LLMProvider {
   if (env.LLM_BASE_URL && env.LLM_API_KEY) {
+    const model = env.LLM_MODEL || "deepseek-v4-flash";
+    const extra =
+      parseExtraBody(env.LLM_EXTRA_BODY) ??
+      defaultThinkingBody(model, env.LLM_BASE_URL);
     return new OpenAICompatibleLLM({
       baseURL: env.LLM_BASE_URL,
       apiKey: env.LLM_API_KEY,
-      model: env.LLM_MODEL || "deepseek-chat",
+      model,
+      defaultExtraBody: extra,
     });
   }
   if (env.AI) {
     return new WorkersAILLM(env.AI, env.LLM_MODEL || DEFAULT_WORKERS_LLM_MODEL);
   }
   throw new Error(
-    "No LLM configured: open Settings → Models, or set LLM_BASE_URL + LLM_API_KEY"
+    "No LLM configured: open Settings → Models & API, or set LLM_BASE_URL + LLM_API_KEY"
+  );
+}
+
+function isDevLocalEmbedding(env: ProviderEnv): boolean {
+  const p = (env.EMBEDDING_PROVIDER || "").toLowerCase();
+  const allowed =
+    env.ALLOW_DEV_EMBEDDING === "1" ||
+    env.ALLOW_DEV_EMBEDDING === "true";
+  return (
+    allowed &&
+    (p === "local" || p === "local-hash" || p === "local-hash-dev")
   );
 }
 
 function buildEmbedding(env: ProviderEnv): EmbeddingProvider {
   if (env.EMBEDDING_BASE_URL && env.EMBEDDING_API_KEY) {
+    const dimensions = parseInt(env.EMBEDDING_DIM || "384", 10) || 384;
     return new OpenAICompatibleEmbedding({
       baseURL: env.EMBEDDING_BASE_URL,
       apiKey: env.EMBEDDING_API_KEY,
       model: env.EMBEDDING_MODEL || "text-embedding-3-small",
+      dimensions,
     });
   }
 
-  const preferLocal =
-    env.EMBEDDING_PROVIDER === "local" ||
-    env.SELFHOST === "1" ||
-    env.SELFHOST === "true";
-
-  if (preferLocal) {
+  if (isDevLocalEmbedding(env)) {
     const dim = parseInt(env.EMBEDDING_DIM || "384", 10) || 384;
     return new LocalHashEmbedding(dim);
   }
@@ -87,7 +136,8 @@ function buildEmbedding(env: ProviderEnv): EmbeddingProvider {
   }
 
   throw new Error(
-    "No embedding configured: open Settings → Models, or set EMBEDDING_* env vars"
+    "Production embedding is not configured. Set EMBEDDING_BASE_URL + EMBEDDING_API_KEY " +
+      "(and EMBEDDING_DIM), or for smoke tests only: EMBEDDING_PROVIDER=local-hash-dev and ALLOW_DEV_EMBEDDING=true"
   );
 }
 

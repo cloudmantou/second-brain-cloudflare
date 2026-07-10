@@ -5,6 +5,7 @@
 
 import {
   emptyModelSettings,
+  isDevLocalProvider,
   mergeModelSettings,
   type ModelSettings,
   type SettingsEnvInput,
@@ -89,13 +90,15 @@ export async function resolveProviderEnv<T extends SettingsEnvInput & { DB?: D1D
 ): Promise<T> {
   if (!env.DB) return env;
 
-  const { effective } = await getEffectiveModelSettings(env as SettingsEnvInput & { DB: D1Database });
+  const { effective } = await getEffectiveModelSettings(
+    env as SettingsEnvInput & { DB: D1Database }
+  );
 
-  const embLocal = effective.embedding.provider === "local";
+  const embLocal = isDevLocalProvider(effective.embedding.provider);
   const embOpenAI =
+    !embLocal &&
     effective.embedding.provider !== "none" &&
     effective.embedding.provider !== "workers" &&
-    effective.embedding.provider !== "local" &&
     Boolean(effective.embedding.baseURL && effective.embedding.apiKey);
 
   return {
@@ -113,12 +116,34 @@ export async function resolveProviderEnv<T extends SettingsEnvInput & { DB?: D1D
       ? undefined
       : effective.embedding.model || env.EMBEDDING_MODEL || undefined,
     EMBEDDING_PROVIDER: embLocal
-      ? "local"
+      ? "local-hash-dev"
       : embOpenAI
-        ? env.EMBEDDING_PROVIDER
+        ? effective.embedding.provider
         : env.EMBEDDING_PROVIDER,
     EMBEDDING_DIM: String(effective.embedding.dimensions || 384),
-    // Only force local when control plane explicitly selects local
-    SELFHOST: embLocal ? env.SELFHOST || "1" : env.SELFHOST,
+    ALLOW_DEV_EMBEDDING: embLocal
+      ? env.ALLOW_DEV_EMBEDDING || "true"
+      : env.ALLOW_DEV_EMBEDDING,
+    SELFHOST: env.SELFHOST,
+  };
+}
+
+/** Build a one-off env overlay from a candidate config without writing to DB. */
+export function overlayProviderEnvFromSettings<T extends SettingsEnvInput>(
+  env: T,
+  candidate: ModelSettings
+): T {
+  const embLocal = isDevLocalProvider(candidate.embedding.provider);
+  return {
+    ...env,
+    LLM_BASE_URL: candidate.llm.baseURL || undefined,
+    LLM_API_KEY: candidate.llm.apiKey || undefined,
+    LLM_MODEL: candidate.llm.model || undefined,
+    EMBEDDING_BASE_URL: embLocal ? undefined : candidate.embedding.baseURL || undefined,
+    EMBEDDING_API_KEY: embLocal ? undefined : candidate.embedding.apiKey || undefined,
+    EMBEDDING_MODEL: embLocal ? undefined : candidate.embedding.model || undefined,
+    EMBEDDING_PROVIDER: embLocal ? "local-hash-dev" : candidate.embedding.provider,
+    EMBEDDING_DIM: String(candidate.embedding.dimensions || 384),
+    ALLOW_DEV_EMBEDDING: embLocal ? "true" : env.ALLOW_DEV_EMBEDDING,
   };
 }

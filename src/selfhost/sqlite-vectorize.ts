@@ -5,9 +5,14 @@
 
 import type Database from "better-sqlite3";
 
-/** Local copy to avoid circular import with the Worker entrypoint. */
+/** Strict cosine — refuses dimension mismatch (no silent truncation). */
 function cosineSim(a: ArrayLike<number>, b: ArrayLike<number>): number {
-  const n = Math.min(a.length, b.length);
+  if (a.length !== b.length) {
+    throw new Error(
+      `Vector dimension mismatch: query ${a.length} vs stored ${b.length}. Reindex after changing embedding config.`
+    );
+  }
+  const n = a.length;
   if (!n) return 0;
   let dot = 0;
   let na = 0;
@@ -147,15 +152,32 @@ export class SqliteVectorizeIndex {
 
   async describe(): Promise<VectorizeIndexDetails> {
     const row = this.db.prepare(`SELECT COUNT(*) as n FROM sb_vectors`).get() as { n: number };
+    const sample = this.db
+      .prepare(`SELECT values_json FROM sb_vectors LIMIT 1`)
+      .get() as { values_json: string } | undefined;
+    let dimensions = 0;
+    if (sample?.values_json) {
+      try {
+        dimensions = (JSON.parse(sample.values_json) as number[]).length;
+      } catch {
+        dimensions = 0;
+      }
+    }
     return {
       id: "local",
       name: "second-brain-vectors",
-      config: { dimensions: 384, metric: "cosine" },
+      config: { dimensions, metric: "cosine" },
       vectorsCount: row.n,
-      dimensions: 384,
+      dimensions,
       vectorCount: row.n,
       processedUpToDatetime: new Date().toISOString(),
       processedUpToMutation: 0,
     } as unknown as VectorizeIndexDetails;
+  }
+
+  /** Drop all vectors (used when embedding fingerprint changes). */
+  async clearAll(): Promise<number> {
+    const info = this.db.prepare(`DELETE FROM sb_vectors`).run();
+    return info.changes;
   }
 }
