@@ -29,6 +29,11 @@ describe("model-settings helpers", () => {
     expect(normalizeApiKey("  Bearer sk-abc  ")).toBe("sk-abc");
     expect(normalizeApiKey('"sk-quoted"')).toBe("sk-quoted");
     expect(normalizeApiKey("sk-plain\n")).toBe("sk-plain");
+    // Fullwidth Latin → halfwidth (common when copying from CN docs)
+    expect(normalizeApiKey("ｓｋ－ａｂｃ")).toBe("sk-abc");
+    // Fullwidth parens must not remain (ByteString crash)
+    expect(() => normalizeApiKey("sk-abc（说明）")).toThrow(/非法字符|码点/);
+    expect(() => normalizeApiKey("x".repeat(600))).toThrow(/过长/);
   });
 
   it("minimax CN preset uses minimaxi.com", async () => {

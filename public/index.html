@@ -4654,20 +4654,53 @@
         }
       }
 
+      /** Client-side key clean (mirrors server normalizeApiKey best-effort). */
+      function cleanApiKeyClient(raw) {
+        let k = String(raw ?? '')
+        k = k.replace(/[\uFF01-\uFF5E]/g, (ch) =>
+          String.fromCharCode(ch.charCodeAt(0) - 0xfee0)
+        )
+        k = k.replace(/\u3000/g, ' ')
+        k = k.replace(/[\u200B-\u200D\u2060\uFEFF\u00AD]/g, '')
+        k = k.trim().replace(/^Bearer\s+/i, '').trim()
+        if (
+          (k.startsWith('"') && k.endsWith('"')) ||
+          (k.startsWith("'") && k.endsWith("'")) ||
+          (k.startsWith('`') && k.endsWith('`'))
+        ) {
+          k = k.slice(1, -1).trim()
+        }
+        k = k.replace(/\s+/g, '')
+        // Detect remaining non-Latin1 (would break Authorization header)
+        if (/[^\x00-\xFF]/.test(k)) {
+          throw new Error(
+            t('models.badKeyChars') ||
+              'API Key 含中文/全角符号，请从控制台重新复制纯英文密钥（不要带说明文字）'
+          )
+        }
+        if (k.length > 512) {
+          throw new Error(
+            t('models.badKeyLong') ||
+              'API Key 过长，请只粘贴密钥本身（通常几十到两百字符）'
+          )
+        }
+        return k
+      }
+
       function collectModelFormBody() {
         return {
           llm: {
             provider: document.getElementById('llm-provider').value,
             baseURL: document.getElementById('llm-base').value.trim(),
             model: document.getElementById('llm-model').value.trim(),
-            apiKey: document.getElementById('llm-key').value,
+            apiKey: cleanApiKeyClient(document.getElementById('llm-key').value),
           },
           embedding: {
             provider: document.getElementById('emb-provider').value,
             baseURL: document.getElementById('emb-base').value.trim(),
             model: document.getElementById('emb-model').value.trim(),
             dimensions: parseInt(document.getElementById('emb-dim').value, 10) || 384,
-            apiKey: document.getElementById('emb-key').value,
+            apiKey: cleanApiKeyClient(document.getElementById('emb-key').value),
           },
         }
       }

@@ -5,6 +5,7 @@
 
 import type { ChatMessage, ChatOptions, LLMProvider } from "./llm";
 import type { EmbedOptions, EmbeddingProvider } from "./embedding";
+import { normalizeApiKey } from "../settings/model-settings";
 import { logModelCall } from "../telemetry/queue";
 
 export interface OpenAICompatibleConfig {
@@ -24,17 +25,6 @@ export interface OpenAICompatibleEmbeddingConfig extends OpenAICompatibleConfig 
 
 function normalizeBaseURL(baseURL: string): string {
   return baseURL.replace(/\/+$/, "");
-}
-
-function normalizeApiKey(apiKey: string): string {
-  let k = String(apiKey ?? "").trim().replace(/^Bearer\s+/i, "").trim();
-  if (
-    (k.startsWith('"') && k.endsWith('"')) ||
-    (k.startsWith("'") && k.endsWith("'"))
-  ) {
-    k = k.slice(1, -1).trim();
-  }
-  return k;
 }
 
 /** Enrich provider 401/2049 messages with region/key-type hints (esp. MiniMax). */

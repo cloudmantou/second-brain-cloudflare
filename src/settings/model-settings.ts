@@ -353,17 +353,83 @@ export function isMaskedSecret(value: string | undefined): boolean {
   return Boolean(value && value.includes("••"));
 }
 
-/** Trim whitespace/newlines and strip accidental `Bearer ` prefix from pasted keys. */
+/**
+ * Clean a pasted API key so it is safe for HTTP Authorization headers.
+ *
+ * Common paste failures (esp. from Chinese docs / IM):
+ * - leading `Bearer `
+ * - surrounding quotes
+ * - fullwidth Latin / punctuation (U+FF01–U+FF5E) → halfwidth ASCII
+ * - fullwidth space U+3000, zero-width / BOM chars
+ * - newlines / tabs
+ *
+ * HTTP headers must be ByteString (code points ≤ 255). Non-ASCII leftover
+ * characters break fetch with "Cannot convert argument to a ByteString".
+ */
 export function normalizeApiKey(raw: string): string {
-  let k = String(raw ?? "").trim().replace(/^Bearer\s+/i, "").trim();
-  // Paste from some UIs can include surrounding quotes
+  let k = String(raw ?? "");
+
+  // Normalize newlines early
+  k = k.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+
+  // Fullwidth ASCII (！＂＃…～) → halfwidth (!"#…~)
+  k = k.replace(/[\uFF01-\uFF5E]/g, (ch) =>
+    String.fromCharCode(ch.charCodeAt(0) - 0xfee0)
+  );
+  // Fullwidth space → normal space
+  k = k.replace(/\u3000/g, " ");
+
+  // Zero-width / BOM / soft hyphen / word joiner
+  k = k.replace(/[\u200B-\u200D\u2060\uFEFF\u00AD]/g, "");
+
+  k = k.trim().replace(/^Bearer\s+/i, "").trim();
+
   if (
     (k.startsWith('"') && k.endsWith('"')) ||
-    (k.startsWith("'") && k.endsWith("'"))
+    (k.startsWith("'") && k.endsWith("'")) ||
+    (k.startsWith("`") && k.endsWith("`"))
   ) {
     k = k.slice(1, -1).trim();
   }
+
+  // Drop all whitespace (keys never contain spaces once pasted cleanly)
+  k = k.replace(/\s+/g, "");
+
+  // Headers cannot carry code points > 255
+  if (/[^\x00-\xFF]/.test(k)) {
+    const bad = [...k].find((c) => c.charCodeAt(0) > 255);
+    const code = bad ? bad.charCodeAt(0) : 0;
+    throw new Error(
+      `API Key 含非法字符（码点 ${code}，如中文/全角符号）。请从开放平台「接口密钥」页面重新复制纯英文 Key，不要粘贴带说明文字的整段内容。当前长度 ${k.length}`
+    );
+  }
+
+  // Heuristic: real keys are short; 1000+ chars means paste of a whole page
+  if (k.length > 512) {
+    throw new Error(
+      `API Key 过长（${k.length} 字符）。正常密钥通常几十到两百字符。请只粘贴密钥本身，不要带标题、括号说明或整段文档。`
+    );
+  }
+
   return k;
+}
+
+/** Soft clean for UI/display — never throws; strips junk best-effort. */
+export function sanitizeApiKeyLoose(raw: string): string {
+  try {
+    return normalizeApiKey(raw);
+  } catch {
+    // Best-effort strip without throw (for draft form fields)
+    return String(raw ?? "")
+      .replace(/[\uFF01-\uFF5E]/g, (ch) =>
+        String.fromCharCode(ch.charCodeAt(0) - 0xfee0)
+      )
+      .replace(/\u3000/g, " ")
+      .replace(/[\u200B-\u200D\u2060\uFEFF\u00AD]/g, "")
+      .replace(/\s+/g, "")
+      .replace(/^Bearer/i, "")
+      .trim();
+  }
 }
 
 export interface SettingsEnvInput {
