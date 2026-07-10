@@ -2,11 +2,11 @@
  * Convert a Fastify request into a Fetch API Request and write the Response back.
  *
  * JSON/HTML are fully buffered (avoids empty bodies under Fastify/Nginx).
- * SSE (text/event-stream) is streamed for /chat.
+ * SSE (text/event-stream) is streamed for /chat without using stream.pipeline
+ * (pipeline + client disconnect → ERR_STREAM_PREMATURE_CLOSE can kill Node).
  */
 
 import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Env } from "../index";
 import worker from "../index";
@@ -35,17 +35,17 @@ export function isBenignStreamClose(err: unknown): boolean {
     code === "ECONNRESET" ||
     code === "EPIPE" ||
     code === "ECANCELED" ||
-    code === "ABORT_ERR"
+    code === "ABORT_ERR" ||
+    code === "ERR_STREAM_DESTROYED"
   ) {
     return true;
   }
   if (e.name === "AbortError") return true;
   const msg = String(e.message || "");
-  return /premature close|aborted|socket hang up/i.test(msg);
+  return /premature close|aborted|socket hang up|destroyed/i.test(msg);
 }
 
 function buildRequestUrl(req: FastifyRequest): string {
-  // Prefer PUBLIC_URL from .env — single global site domain for OAuth issuer
   const configured = readPublicUrlFromProcess();
   if (configured) {
     return `${configured}${req.url}`;
@@ -66,9 +66,52 @@ function buildRequestUrl(req: FastifyRequest): string {
   return `${proto}://${host}${req.url}`;
 }
 
+function clientGone(req: FastifyRequest, reply: FastifyReply): boolean {
+  return (
+    req.raw.destroyed ||
+    req.raw.aborted === true ||
+    reply.raw.destroyed ||
+    reply.raw.writableEnded ||
+    !reply.raw.writable
+  );
+}
+
 /**
- * Pipe Fetch SSE body → HTTP ServerResponse without crashing when the browser
- * tab closes mid-stream (ERR_STREAM_PREMATURE_CLOSE).
+ * Write one chunk; resolve even if client already closed (benign).
+ */
+function writeChunk(
+  res: import("node:http").ServerResponse,
+  chunk: Buffer | Uint8Array
+): Promise<void> {
+  return new Promise((resolve) => {
+    if (res.destroyed || res.writableEnded || !res.writable) {
+      resolve();
+      return;
+    }
+    try {
+      const ok = res.write(chunk, (err) => {
+        // write callback error (EPIPE etc.) — always resolve to keep process alive
+        if (err && !isBenignStreamClose(err)) {
+          console.error("[sse] write error:", err);
+        }
+        resolve();
+      });
+      if (!ok) {
+        res.once("drain", () => resolve());
+        res.once("close", () => resolve());
+        res.once("error", () => resolve());
+      }
+    } catch (err) {
+      if (!isBenignStreamClose(err)) console.error("[sse] write threw:", err);
+      resolve();
+    }
+  });
+}
+
+/**
+ * Manually pump Web/Node stream → HTTP response.
+ * Avoids stream.pipeline() which throws uncaught ERR_STREAM_PREMATURE_CLOSE
+ * when the browser closes the tab mid-SSE (kills the whole Node process).
  */
 async function pipeSseToResponse(
   webBody: ReadableStream,
@@ -77,53 +120,70 @@ async function pipeSseToResponse(
   status: number,
   responseHeaders: Array<[string, string]>
 ): Promise<void> {
-  // Hijack so Fastify does not end the response when the route handler returns.
   reply.hijack();
   reply.raw.statusCode = status;
   for (const [key, value] of responseHeaders) {
-    reply.raw.setHeader(key, value);
+    try {
+      reply.raw.setHeader(key, value);
+    } catch {
+      /* headers may already be sent */
+    }
   }
-  reply.raw.setHeader("cache-control", "no-cache, no-transform");
-  reply.raw.setHeader("x-accel-buffering", "no");
-  if (!reply.raw.headersSent) {
-    reply.raw.flushHeaders();
+  try {
+    reply.raw.setHeader("cache-control", "no-cache, no-transform");
+    reply.raw.setHeader("x-accel-buffering", "no");
+    if (!reply.raw.headersSent) reply.raw.flushHeaders();
+  } catch {
+    /* ignore */
   }
+
+  // Soft-ignore residual errors on the socket
+  reply.raw.on("error", (err) => {
+    if (!isBenignStreamClose(err)) console.error("[sse] response error:", err);
+  });
 
   const nodeStream = Readable.fromWeb(
     webBody as unknown as import("stream/web").ReadableStream
   );
-
-  // Swallow async stream errors so they never become uncaughtException
-  // after pipeline() has already settled (common on client disconnect).
-  const quiet = (err: unknown) => {
-    if (!isBenignStreamClose(err)) {
-      console.error("[sse] stream error:", err);
-    }
-  };
-  nodeStream.on("error", quiet);
-  reply.raw.on("error", quiet);
-
-  const abortUpstream = () => {
-    if (!nodeStream.destroyed) {
-      nodeStream.destroy();
-    }
-  };
-  // Client closed the socket (refresh, navigate away, proxy timeout)
-  req.raw.on("close", abortUpstream);
-  reply.raw.on("close", abortUpstream);
+  nodeStream.on("error", (err) => {
+    if (!isBenignStreamClose(err)) console.error("[sse] source error:", err);
+  });
 
   try {
-    await pipeline(nodeStream, reply.raw);
-  } catch (error) {
-    if (!isBenignStreamClose(error)) {
-      console.error("[sse] pipeline failed:", error);
+    for await (const chunk of nodeStream) {
+      if (clientGone(req, reply)) break;
+      const buf = Buffer.isBuffer(chunk)
+        ? chunk
+        : Buffer.from(chunk as Uint8Array);
+      await writeChunk(reply.raw, buf);
     }
-    // Always ensure source is torn down; destination may already be closed.
-    abortUpstream();
+    if (!clientGone(req, reply)) {
+      try {
+        reply.raw.end();
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch (error) {
+    // for-await can surface destroy/abort as throw — never rethrow
+    if (!isBenignStreamClose(error)) {
+      console.error("[sse] pump failed:", error);
+    }
   } finally {
-    req.raw.off("close", abortUpstream);
-    reply.raw.off("close", abortUpstream);
-    if (!nodeStream.destroyed) nodeStream.destroy();
+    if (!nodeStream.destroyed) {
+      try {
+        nodeStream.destroy();
+      } catch {
+        /* ignore */
+      }
+    }
+    if (!reply.raw.destroyed && !reply.raw.writableEnded) {
+      try {
+        reply.raw.end();
+      } catch {
+        /* ignore */
+      }
+    }
   }
 }
 
@@ -184,7 +244,6 @@ export async function handleWithWorker(
 
   const contentType = response.headers.get("content-type") || "";
 
-  // Only stream true SSE; buffer everything else so JSON APIs never return empty bodies.
   if (contentType.includes("text/event-stream")) {
     await pipeSseToResponse(
       response.body,

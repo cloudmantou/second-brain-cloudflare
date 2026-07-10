@@ -26,6 +26,25 @@ import { createFixedWindowRateLimiter } from "./selfhost/rate-limit";
 
 dotenv.config();
 
+// Register ASAP: client disconnect mid-SSE must never kill the process.
+// (Node 20/24 stream.pipeline used to throw uncaught ERR_STREAM_PREMATURE_CLOSE.)
+process.on("uncaughtException", (err) => {
+  if (isBenignStreamClose(err)) {
+    console.warn("[stream] ignored premature close (client disconnected)");
+    return;
+  }
+  console.error("[fatal] uncaughtException:", err);
+  process.exit(1);
+});
+process.on("unhandledRejection", (reason) => {
+  if (isBenignStreamClose(reason)) {
+    console.warn("[stream] ignored premature close rejection (client disconnected)");
+    return;
+  }
+  console.error("[fatal] unhandledRejection:", reason);
+  process.exit(1);
+});
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || "8787", 10);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -320,24 +339,6 @@ async function shutdown() {
 }
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
-
-// Client disconnect mid-SSE must never kill the process (Node 20+/24 pipeline).
-process.on("uncaughtException", (err) => {
-  if (isBenignStreamClose(err)) {
-    console.warn("[stream] ignored premature close (client disconnected)");
-    return;
-  }
-  console.error("[fatal] uncaughtException:", err);
-  process.exit(1);
-});
-process.on("unhandledRejection", (reason) => {
-  if (isBenignStreamClose(reason)) {
-    console.warn("[stream] ignored premature close rejection (client disconnected)");
-    return;
-  }
-  console.error("[fatal] unhandledRejection:", reason);
-  process.exit(1);
-});
 
 main().catch((err) => {
   console.error(err);
