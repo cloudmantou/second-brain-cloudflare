@@ -1,5 +1,8 @@
 /**
- * Convert a Fastify request into a Fetch API Request and stream the Response back.
+ * Convert a Fastify request into a Fetch API Request and write the Response back.
+ *
+ * JSON/HTML are fully buffered (avoids empty bodies under Fastify/Nginx).
+ * SSE (text/event-stream) is streamed for /chat.
  */
 
 import { Readable } from "node:stream";
@@ -7,6 +10,18 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Env } from "../index";
 import worker from "../index";
 import { createExecutionContext } from "./env";
+
+const HOP_BY_HOP = new Set([
+  "transfer-encoding",
+  "content-length",
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailers",
+  "upgrade",
+]);
 
 function buildRequestUrl(req: FastifyRequest): string {
   const host = req.headers.host || "127.0.0.1";
@@ -59,7 +74,7 @@ export async function handleWithWorker(
 
   reply.status(response.status);
   response.headers.forEach((value, key) => {
-    if (key.toLowerCase() === "transfer-encoding") return;
+    if (HOP_BY_HOP.has(key.toLowerCase())) return;
     reply.header(key, value);
   });
 
@@ -68,7 +83,18 @@ export async function handleWithWorker(
     return;
   }
 
-  // Stream SSE / large bodies instead of buffering the entire response.
-  const nodeStream = Readable.fromWeb(response.body as unknown as import("stream/web").ReadableStream);
-  reply.send(nodeStream);
+  const contentType = response.headers.get("content-type") || "";
+
+  // Only stream true SSE; buffer everything else so JSON APIs never return empty bodies.
+  if (contentType.includes("text/event-stream")) {
+    const nodeStream = Readable.fromWeb(
+      response.body as unknown as import("stream/web").ReadableStream
+    );
+    reply.send(nodeStream);
+    return;
+  }
+
+  const buf = Buffer.from(await response.arrayBuffer());
+  reply.header("content-length", String(buf.length));
+  reply.send(buf);
 }

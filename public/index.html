@@ -1848,8 +1848,9 @@
         z-index: 90;
         background: rgba(38, 36, 31, 0.28);
         display: flex;
-        align-items: flex-end;
+        align-items: center;
         justify-content: center;
+        padding: 16px;
         opacity: 0;
         pointer-events: none;
         transition: opacity 0.22s var(--ease);
@@ -1861,15 +1862,14 @@
       }
 
       .models-inner {
-        width: 100%;
-        max-width: 520px;
-        max-height: min(94vh, 860px);
+        width: min(520px, 100%);
+        max-height: min(88vh, 720px);
         overflow: auto;
         background: var(--bg-card);
-        border-radius: 22px 22px 0 0;
-        padding: 20px 18px 28px;
-        box-shadow: var(--shadow-sheet);
-        transform: translateY(24px);
+        border-radius: 18px;
+        padding: 20px 18px 24px;
+        box-shadow: var(--shadow-float);
+        transform: translateY(12px) scale(0.98);
         transition: transform 0.28s var(--ease);
       }
 
@@ -3555,6 +3555,21 @@
       let _modelPresets = { llm: [], embedding: [] }
       let _modelsTab = 'llm'
 
+      /** Safe JSON parse of fetch Response — avoids cryptic "Unexpected end of JSON input". */
+      async function readJsonResponse(res) {
+        const text = await res.text()
+        if (!text || !String(text).trim()) {
+          throw new Error(
+            `服务器返回空响应 (HTTP ${res.status})。请确认已 git pull origin selfhost 并重启 npm run server`
+          )
+        }
+        try {
+          return JSON.parse(text)
+        } catch {
+          throw new Error(`响应不是 JSON (HTTP ${res.status}): ${String(text).slice(0, 160)}`)
+        }
+      }
+
       function setModelsMsg(text, kind) {
         const el = document.getElementById('models-msg')
         if (!el) return
@@ -3689,11 +3704,10 @@
           const res = await fetch(`${WORKER_URL}/settings/models`, {
             headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
           })
+          const data = await readJsonResponse(res)
           if (!res.ok) {
-            const err = await res.json().catch(() => ({}))
-            throw new Error(err.error || res.statusText)
+            throw new Error(data.error || res.statusText || `HTTP ${res.status}`)
           }
-          const data = await res.json()
           _modelPresets = data.presets || { llm: [], embedding: [] }
 
           const llmId = data.llm?.provider && data.llm.provider !== 'none' ? data.llm.provider : 'custom'
@@ -3753,7 +3767,7 @@
             },
             body: JSON.stringify(body),
           })
-          const data = await res.json()
+          const data = await readJsonResponse(res)
           if (!res.ok || !data.ok) throw new Error(data.error || '保存失败')
           document.getElementById('llm-key').value = ''
           document.getElementById('emb-key').value = ''
@@ -3810,7 +3824,7 @@
             },
             body: JSON.stringify({ target, ...collectModelFormBody() }),
           })
-          const data = await res.json()
+          const data = await readJsonResponse(res)
           if (!data.ok) throw new Error(data.error || '测试失败')
           if (target === 'embedding') {
             setModelsMsg('向量测试通过 · 维度=' + data.dimensions + ' · 尚未保存', 'ok')
@@ -4029,13 +4043,13 @@
               extraTags: ['cf-import'],
             }),
           })
-          const data = await res.json()
-          if (!res.ok || data.ok === false) throw new Error(data.error || res.statusText)
+          const data = await readJsonResponse(res)
+          if (!res.ok || data.ok === false) throw new Error(data.error || res.statusText || `HTTP ${res.status}`)
 
-          let msg = `Import done: +${data.inserted} new, ${data.skipped} skipped, ${data.updated || 0} updated, ${data.failed} failed.`
+          let msg = `导入完成：新增 ${data.inserted}，跳过 ${data.skipped}，更新 ${data.updated || 0}，失败 ${data.failed}。`
           if (data.pendingVectorize?.length) {
-            msg += `\n\n${data.pendingVectorize.length} need re-embedding. Run Vectorize pending from stats, or:\nPOST /vectorize-pending`
-            if (confirm(msg + '\n\nTry vectorize-pending now?')) {
+            msg += `\n\n${data.pendingVectorize.length} 条需重新向量化。`
+            if (confirm(msg + '\n\n现在执行 vectorize-pending？')) {
               const v = await fetch(`${WORKER_URL}/vectorize-pending`, {
                 method: 'POST',
                 headers: {
@@ -4044,7 +4058,7 @@
                 },
                 body: JSON.stringify({ limit: 500 }),
               })
-              const vd = await v.json().catch(() => ({}))
+              const vd = await readJsonResponse(v).catch(() => ({}))
               alert('vectorize-pending: ' + JSON.stringify(vd).slice(0, 400))
             } else {
               alert(msg)
@@ -4055,7 +4069,7 @@
           loadRecent()
           updateStatus()
         } catch (e) {
-          alert('Import failed: ' + (e.message || e))
+          alert('导入失败: ' + (e.message || e))
         }
       }
 

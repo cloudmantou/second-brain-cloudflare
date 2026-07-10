@@ -83,7 +83,8 @@ async function main() {
 
   const app = Fastify({
     logger: true,
-    bodyLimit: 10 * 1024 * 1024,
+    // Allow Cloudflare export JSON uploads (default 1MB is too small for large brains)
+    bodyLimit: 32 * 1024 * 1024,
   });
 
   app.addContentTypeParser(
