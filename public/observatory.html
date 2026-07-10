@@ -1,0 +1,666 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#F4F1EA" />
+    <title>观测台 · Second Brain</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Lora:wght@400;500;600&family=DM+Sans:opsz,wght@9..40,400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css" />
+    <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      :root {
+        --bg: #f4f1ea;
+        --bg-card: #fcfbf7;
+        --surface-2: #ece8dd;
+        --text: #26241f;
+        --muted: #6e6b62;
+        --tertiary: #a8a498;
+        --border: rgba(38, 36, 31, 0.09);
+        --accent: #b26641;
+        --accent-soft: rgba(178, 102, 65, 0.12);
+        --good: #5b8a6b;
+        --danger: #b0503c;
+        --danger-soft: rgba(176, 80, 60, 0.1);
+        --font-serif: "Lora", Georgia, serif;
+        --font-sans: "DM Sans", system-ui, sans-serif;
+        --shadow: 0 1px 2px rgba(38, 36, 31, 0.04), 0 4px 14px rgba(38, 36, 31, 0.06);
+      }
+      html[data-theme="dark"] {
+        --bg: #18160f;
+        --bg-card: #221f17;
+        --surface-2: #2c2820;
+        --text: #ece7dc;
+        --muted: #a39c8c;
+        --tertiary: #6e685b;
+        --border: rgba(255, 255, 255, 0.085);
+        --accent: #d38a5e;
+        --accent-soft: rgba(211, 138, 94, 0.16);
+        --good: #7bae8a;
+        --danger: #d9806b;
+        --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 18px rgba(0, 0, 0, 0.28);
+      }
+      body {
+        font-family: var(--font-sans);
+        background: var(--bg);
+        color: var(--text);
+        min-height: 100vh;
+      }
+      .top {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 18px 22px;
+        border-bottom: 0.5px solid var(--border);
+        background: var(--bg-card);
+        position: sticky;
+        top: 0;
+        z-index: 10;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .brand a {
+        color: var(--muted);
+        text-decoration: none;
+        font-size: 13px;
+      }
+      .brand a:hover { color: var(--accent); }
+      .brand h1 {
+        font-family: var(--font-serif);
+        font-size: 22px;
+        font-weight: 500;
+      }
+      .brand .sub {
+        font-size: 12px;
+        color: var(--tertiary);
+      }
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+      select, button {
+        font-family: var(--font-sans);
+        font-size: 13px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: var(--bg);
+        color: var(--text);
+        padding: 8px 14px;
+        cursor: pointer;
+      }
+      button.primary {
+        background: var(--accent);
+        color: #fcfbf7;
+        border-color: transparent;
+      }
+      button:disabled { opacity: 0.5; cursor: default; }
+      main {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 20px 18px 48px;
+      }
+      .kpi-row {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 12px;
+        margin-bottom: 18px;
+      }
+      @media (min-width: 720px) {
+        .kpi-row { grid-template-columns: repeat(4, 1fr); }
+      }
+      .kpi {
+        background: var(--bg-card);
+        border: 0.5px solid var(--border);
+        border-radius: 14px;
+        padding: 16px;
+        box-shadow: var(--shadow);
+      }
+      .kpi .label {
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+      .kpi .value {
+        font-family: var(--font-serif);
+        font-size: 26px;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+      }
+      .kpi .hint {
+        font-size: 11px;
+        color: var(--tertiary);
+        margin-top: 4px;
+      }
+      .section {
+        background: var(--bg-card);
+        border: 0.5px solid var(--border);
+        border-radius: 14px;
+        box-shadow: var(--shadow);
+        margin-bottom: 16px;
+        overflow: hidden;
+      }
+      .section-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 14px 16px;
+        border-bottom: 0.5px solid var(--border);
+      }
+      .section-head h2 {
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .table-wrap { overflow-x: auto; }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12.5px;
+      }
+      th, td {
+        text-align: left;
+        padding: 10px 12px;
+        border-bottom: 0.5px solid var(--border);
+        white-space: nowrap;
+      }
+      th {
+        color: var(--muted);
+        font-weight: 500;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      tr:hover td { background: var(--accent-soft); cursor: pointer; }
+      .pill {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 11px;
+        background: var(--surface-2);
+        color: var(--muted);
+      }
+      .pill.ok { background: rgba(91, 138, 107, 0.15); color: var(--good); }
+      .pill.err { background: var(--danger-soft); color: var(--danger); }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+      .preview {
+        max-width: 220px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--muted);
+      }
+      .empty {
+        padding: 28px 16px;
+        text-align: center;
+        color: var(--tertiary);
+        font-size: 13px;
+      }
+      .auth-gate {
+        max-width: 400px;
+        margin: 80px auto;
+        padding: 28px;
+        background: var(--bg-card);
+        border-radius: 16px;
+        box-shadow: var(--shadow);
+        border: 0.5px solid var(--border);
+      }
+      .auth-gate h2 {
+        font-family: var(--font-serif);
+        margin-bottom: 8px;
+      }
+      .auth-gate p { font-size: 13px; color: var(--muted); margin-bottom: 16px; line-height: 1.5; }
+      .auth-gate input {
+        width: 100%;
+        padding: 12px 14px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: var(--bg);
+        color: var(--text);
+        font-size: 14px;
+        margin-bottom: 10px;
+      }
+      .drawer-bg {
+        position: fixed;
+        inset: 0;
+        background: rgba(38, 36, 31, 0.28);
+        z-index: 40;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.2s;
+      }
+      .drawer-bg.open { opacity: 1; pointer-events: auto; }
+      .drawer {
+        position: fixed;
+        top: 0;
+        right: 0;
+        width: min(420px, 100%);
+        height: 100%;
+        background: var(--bg-card);
+        z-index: 50;
+        transform: translateX(100%);
+        transition: transform 0.25s cubic-bezier(0.22, 0.61, 0.36, 1);
+        overflow: auto;
+        box-shadow: -8px 0 32px rgba(0,0,0,0.12);
+        padding: 20px;
+      }
+      .drawer.open { transform: none; }
+      .drawer h3 {
+        font-family: var(--font-serif);
+        font-size: 20px;
+        margin-bottom: 4px;
+      }
+      .drawer .close {
+        float: right;
+        border: none;
+        background: var(--surface-2);
+      }
+      .block {
+        margin-top: 16px;
+        padding-top: 12px;
+        border-top: 0.5px solid var(--border);
+      }
+      .block h4 {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--tertiary);
+        margin-bottom: 8px;
+      }
+      .block pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 12px;
+        line-height: 1.45;
+        color: var(--muted);
+        background: var(--bg);
+        padding: 10px;
+        border-radius: 10px;
+      }
+      .status-line {
+        font-size: 12px;
+        color: var(--tertiary);
+        padding: 0 4px 12px;
+      }
+      .ops {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 12px 16px 16px;
+      }
+      .ops .op-chip {
+        font-size: 12px;
+        padding: 6px 10px;
+        border-radius: 10px;
+        background: var(--surface-2);
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="auth-gate" class="auth-gate" style="display: none">
+      <h2>观测台</h2>
+      <p>使用与 Second Brain 相同的 Bearer 令牌登录。可从主应用 Settings 进入本页后自动带入。</p>
+      <input id="auth-url" type="url" placeholder="https://agent.mtzs.cloud" />
+      <input id="auth-token" type="password" placeholder="AUTH_TOKEN" autocomplete="current-password" />
+      <button class="primary" style="width: 100%" onclick="doLogin()">连接</button>
+      <p id="auth-err" style="color: var(--danger); margin-top: 10px; min-height: 18px"></p>
+    </div>
+
+    <div id="app" style="display: none">
+      <header class="top">
+        <div class="brand">
+          <div>
+            <h1>观测台</h1>
+            <div class="sub">系统如何处理记忆 · 请求 / 模型 / 延迟</div>
+          </div>
+          <a href="/">← 返回记忆</a>
+        </div>
+        <div class="controls">
+          <select id="hours" onchange="refresh()">
+            <option value="1">最近 1 小时</option>
+            <option value="24" selected>最近 24 小时</option>
+            <option value="72">最近 3 天</option>
+            <option value="168">最近 7 天</option>
+          </select>
+          <select id="op-filter" onchange="loadLogs()">
+            <option value="">全部操作</option>
+          </select>
+          <label style="font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px">
+            <input type="checkbox" id="auto-refresh" onchange="toggleAuto()" />
+            自动刷新
+          </label>
+          <button onclick="refresh()">刷新</button>
+        </div>
+      </header>
+
+      <main>
+        <p class="status-line" id="status-line">加载中…</p>
+        <div class="kpi-row" id="kpi-row"></div>
+
+        <div class="section">
+          <div class="section-head">
+            <h2>业务操作分布</h2>
+          </div>
+          <div class="ops" id="ops-row"></div>
+        </div>
+
+        <div class="section">
+          <div class="section-head">
+            <h2>最近请求</h2>
+            <span class="sub" id="logs-meta" style="font-size: 12px; color: var(--tertiary)"></span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>操作</th>
+                  <th>状态</th>
+                  <th>耗时</th>
+                  <th>预览</th>
+                  <th>Trace</th>
+                </tr>
+              </thead>
+              <tbody id="logs-body"></tbody>
+            </table>
+            <div class="empty" id="logs-empty" style="display: none">暂无请求日志。使用记忆功能后会出现数据。</div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div class="drawer-bg" id="drawer-bg" onclick="closeDrawer()"></div>
+    <aside class="drawer" id="drawer">
+      <button class="close" onclick="closeDrawer()">关闭</button>
+      <h3 id="drawer-title">Trace</h3>
+      <div class="sub mono" id="drawer-trace" style="font-size: 12px; color: var(--tertiary)"></div>
+      <div id="drawer-body"></div>
+    </aside>
+
+    <script>
+      let BASE = "", TOKEN = "", timer = null, lastLogs = []
+
+      function esc(s) {
+        return String(s ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+      }
+
+      function applyTheme() {
+        const mode = localStorage.getItem("sb_theme") || "auto"
+        const dark =
+          mode === "dark" ||
+          (mode === "auto" && window.matchMedia("(prefers-color-scheme: dark)").matches)
+        document.documentElement.setAttribute("data-theme", dark ? "dark" : "light")
+      }
+
+      function init() {
+        applyTheme()
+        BASE = localStorage.getItem("sb_url") || window.location.origin
+        TOKEN = localStorage.getItem("sb_token") || ""
+        document.getElementById("auth-url").value = BASE
+        if (TOKEN) {
+          showApp()
+          refresh()
+        } else {
+          document.getElementById("auth-gate").style.display = "block"
+        }
+      }
+
+      function doLogin() {
+        BASE = document.getElementById("auth-url").value.replace(/\/+$/, "")
+        TOKEN = document.getElementById("auth-token").value.trim()
+        if (!BASE || !TOKEN) {
+          document.getElementById("auth-err").textContent = "请填写 URL 与令牌"
+          return
+        }
+        localStorage.setItem("sb_url", BASE)
+        localStorage.setItem("sb_token", TOKEN)
+        document.getElementById("auth-gate").style.display = "none"
+        showApp()
+        refresh()
+      }
+
+      function showApp() {
+        document.getElementById("app").style.display = "block"
+      }
+
+      async function api(path) {
+        const res = await fetch(BASE + path, {
+          headers: { Authorization: "Bearer " + TOKEN },
+        })
+        const text = await res.text()
+        if (!text.trim()) throw new Error("空响应 HTTP " + res.status)
+        let data
+        try {
+          data = JSON.parse(text)
+        } catch {
+          throw new Error("非 JSON: " + text.slice(0, 100))
+        }
+        if (!res.ok) throw new Error(data.error || res.statusText)
+        return data
+      }
+
+      function fmtMs(ms) {
+        if (ms == null || Number.isNaN(ms)) return "—"
+        if (ms < 1000) return Math.round(ms) + "ms"
+        return (ms / 1000).toFixed(2) + "s"
+      }
+
+      function fmtTime(ts) {
+        if (!ts) return "—"
+        const d = new Date(ts)
+        return d.toLocaleString("zh-CN", {
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: false,
+        })
+      }
+
+      function fmtPct(x) {
+        if (x == null) return "—"
+        return (x * 100).toFixed(1) + "%"
+      }
+
+      async function refresh() {
+        const hours = document.getElementById("hours").value
+        document.getElementById("status-line").textContent = "刷新中…"
+        try {
+          const data = await api("/analytics/overview?hours=" + hours)
+          renderKpi(data)
+          renderOps(data.top_operations || [])
+          await loadLogs()
+          document.getElementById("status-line").textContent =
+            "窗口 " + hours + "h · 更新于 " + new Date().toLocaleTimeString("zh-CN")
+        } catch (e) {
+          document.getElementById("status-line").textContent = "加载失败: " + e.message
+        }
+      }
+
+      function renderKpi(data) {
+        const r = data.requests || {}
+        const m = data.models || {}
+        const mem = data.memories || {}
+        const cards = [
+          { label: "请求次数", value: r.count ?? 0, hint: "错误 " + (r.errors ?? 0) },
+          { label: "成功率", value: fmtPct(r.success_rate), hint: "平均 " + fmtMs(r.avg_ms) },
+          { label: "最大延迟", value: fmtMs(r.max_ms), hint: "窗口内峰值" },
+          {
+            label: "模型调用",
+            value: m.count ?? 0,
+            hint: "Token " + (m.tokens ?? 0) + " · 失败 " + (m.errors ?? 0),
+          },
+        ]
+        document.getElementById("kpi-row").innerHTML = cards
+          .map(
+            (c) =>
+              `<div class="kpi"><div class="label">${esc(c.label)}</div>` +
+              `<div class="value">${esc(c.value)}</div>` +
+              `<div class="hint">${esc(c.hint)}</div></div>`
+          )
+          .join("")
+
+        // extra row for memory events in status
+        document.getElementById("logs-meta").textContent =
+          "记忆写入 " + (mem.created ?? 0) + " · 召回 " + (mem.recalled ?? 0)
+      }
+
+      function renderOps(ops) {
+        const el = document.getElementById("ops-row")
+        const filter = document.getElementById("op-filter")
+        const current = filter.value
+        const names = ops.map((o) => o.operation)
+        filter.innerHTML = '<option value="">全部操作</option>'
+        names.forEach((n) => {
+          const opt = document.createElement("option")
+          opt.value = n
+          opt.textContent = n
+          if (n === current) opt.selected = true
+          filter.appendChild(opt)
+        })
+        if (!ops.length) {
+          el.innerHTML = '<span class="empty" style="padding:8px">暂无操作分布</span>'
+          return
+        }
+        el.innerHTML = ops
+          .map(
+            (o) =>
+              `<span class="op-chip"><strong>${esc(o.operation)}</strong> · ${esc(o.n)} 次 · 均 ${esc(fmtMs(o.avg_ms))}</span>`
+          )
+          .join("")
+      }
+
+      async function loadLogs() {
+        const op = document.getElementById("op-filter").value
+        let path = "/analytics/logs?limit=80"
+        if (op) path += "&operation=" + encodeURIComponent(op)
+        try {
+          const data = await api(path)
+          lastLogs = data.logs || []
+          renderLogs(lastLogs)
+        } catch (e) {
+          document.getElementById("logs-body").innerHTML = ""
+          document.getElementById("logs-empty").style.display = "block"
+          document.getElementById("logs-empty").textContent = "日志加载失败: " + e.message
+        }
+      }
+
+      function renderLogs(logs) {
+        const body = document.getElementById("logs-body")
+        const empty = document.getElementById("logs-empty")
+        if (!logs.length) {
+          body.innerHTML = ""
+          empty.style.display = "block"
+          empty.textContent = "暂无请求日志。使用记忆功能后会出现数据。"
+          return
+        }
+        empty.style.display = "none"
+        body.innerHTML = logs
+          .map((row, i) => {
+            const ok = row.success === 1 || row.success === true
+            return (
+              `<tr data-i="${i}" onclick="openTrace('${esc(row.trace_id)}')">` +
+              `<td>${esc(fmtTime(row.started_at))}</td>` +
+              `<td><span class="pill">${esc(row.operation)}</span></td>` +
+              `<td><span class="pill ${ok ? "ok" : "err"}">${ok ? "成功" : "失败 " + esc(row.status_code)}</span></td>` +
+              `<td>${esc(fmtMs(row.duration_ms))}</td>` +
+              `<td class="preview" title="${esc(row.content_preview || "")}">${esc(row.content_preview || "—")}</td>` +
+              `<td class="mono">${esc(String(row.trace_id || "").slice(0, 10))}</td>` +
+              `</tr>`
+            )
+          })
+          .join("")
+      }
+
+      async function openTrace(traceId) {
+        if (!traceId || traceId === "no-trace") return
+        document.getElementById("drawer-bg").classList.add("open")
+        document.getElementById("drawer").classList.add("open")
+        document.getElementById("drawer-title").textContent = "Trace 详情"
+        document.getElementById("drawer-trace").textContent = traceId
+        document.getElementById("drawer-body").innerHTML = "<p class='empty'>加载中…</p>"
+        try {
+          const data = await api("/analytics/traces/" + encodeURIComponent(traceId))
+          const reqs = data.requests || []
+          const models = data.model_calls || []
+          const events = data.memory_events || []
+          let html = ""
+          html += `<div class="block"><h4>HTTP 请求 (${reqs.length})</h4>`
+          if (!reqs.length) html += "<p class='empty' style='padding:8px'>无</p>"
+          else
+            html += reqs
+              .map(
+                (r) =>
+                  `<pre>${esc(r.method)} ${esc(r.route)}\n${esc(r.operation)} · ${esc(fmtMs(r.duration_ms))} · HTTP ${esc(r.status_code)}\n${esc(r.content_preview || "")}</pre>`
+              )
+              .join("")
+          html += "</div>"
+
+          html += `<div class="block"><h4>模型调用 (${models.length})</h4>`
+          if (!models.length) html += "<p class='empty' style='padding:8px'>无</p>"
+          else
+            html += models
+              .map(
+                (m) =>
+                  `<pre>${esc(m.call_type)} · ${esc(m.model)}\n${esc(m.status)} · ${esc(fmtMs(m.duration_ms))} · tokens ${esc(m.total_tokens ?? "—")}\nIN: ${esc(m.input_preview || "—")}\nOUT: ${esc(m.output_preview || "—")}${m.error_message ? "\nERR: " + esc(m.error_message) : ""}</pre>`
+              )
+              .join("")
+          html += "</div>"
+
+          html += `<div class="block"><h4>记忆事件 (${events.length})</h4>`
+          if (!events.length) html += "<p class='empty' style='padding:8px'>无</p>"
+          else
+            html += events
+              .map(
+                (e) =>
+                  `<pre>${esc(e.event_type)} · ${esc(e.memory_id)}\n${esc(e.metadata_json || "{}")}</pre>`
+              )
+              .join("")
+          html += "</div>"
+          document.getElementById("drawer-body").innerHTML = html
+        } catch (e) {
+          document.getElementById("drawer-body").innerHTML =
+            "<p class='empty'>加载失败: " + esc(e.message) + "</p>"
+        }
+      }
+
+      function closeDrawer() {
+        document.getElementById("drawer-bg").classList.remove("open")
+        document.getElementById("drawer").classList.remove("open")
+      }
+
+      function toggleAuto() {
+        if (timer) {
+          clearInterval(timer)
+          timer = null
+        }
+        if (document.getElementById("auto-refresh").checked) {
+          timer = setInterval(refresh, 15000)
+        }
+      }
+
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") closeDrawer()
+      })
+
+      init()
+    </script>
+  </body>
+</html>
