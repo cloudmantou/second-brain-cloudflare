@@ -57,6 +57,14 @@ describe("POST /capture", () => {
   });
 
   it("blocks a near-exact duplicate (score ≥ 0.95)", async () => {
+    db.entries.push({
+      id: "existing",
+      content: "Existing duplicate note",
+      tags: "[]",
+      source: "api",
+      created_at: Date.now(),
+      vector_ids: '["existing"]',
+    });
     const vectorize = makeVectorizeMock({
       query: vi.fn().mockResolvedValue({
         matches: [{ id: "existing", score: 0.97, metadata: { parentId: "existing" } }],
@@ -70,7 +78,121 @@ describe("POST /capture", () => {
     expect(data.ok).toBe(false);
     expect(data.duplicate).toBe(true);
     expect(data.matchId).toBe("existing");
-    expect(db.entries).toHaveLength(0);
+    expect(db.entries).toHaveLength(1);
+  });
+
+  it("does not block capture from an orphaned stale vector", async () => {
+    db.entries.push({
+      id: "existing",
+      content: "Current unrelated fact",
+      tags: "[]",
+      source: "api",
+      created_at: Date.now(),
+      vector_ids: '["g-current"]',
+    });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({
+          matches: [{
+            id: "g-stale",
+            score: 0.99,
+            metadata: { parentId: "existing", content: "Old matching fact" },
+          }],
+        }),
+      }),
+    });
+
+    const { ctx } = makeCtx();
+    const response = await worker.fetch(
+      req("POST", "/capture", { body: { content: "Old matching fact" } }),
+      env,
+      ctx
+    );
+    const data = await response.json() as any;
+
+    expect(data.ok).toBe(true);
+    expect(data.duplicate).not.toBe(true);
+    expect(db.entries).toHaveLength(2);
+  });
+
+  it("does not use a deprecated memory for duplicate detection", async () => {
+    db.entries.push({
+      id: "deprecated",
+      content: "Deprecated matching fact",
+      tags: '["status:deprecated"]',
+      source: "api",
+      created_at: Date.now(),
+      vector_ids: '["g-deprecated"]',
+    });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({
+          matches: [{
+            id: "g-deprecated",
+            score: 0.99,
+            metadata: { parentId: "deprecated", content: "Deprecated matching fact" },
+          }],
+        }),
+      }),
+    });
+
+    const { ctx } = makeCtx();
+    const response = await worker.fetch(
+      req("POST", "/capture", { body: { content: "Deprecated matching fact" } }),
+      env,
+      ctx
+    );
+    const data = await response.json() as any;
+
+    expect(data.ok).toBe(true);
+    expect(data.duplicate).not.toBe(true);
+    expect(db.entries).toHaveLength(2);
+  });
+
+  it("overfetches before filtering so an active rank-6 duplicate is not hidden by stale vectors", async () => {
+    db.entries.push({
+      id: "existing",
+      content: "Active duplicate",
+      tags: "[]",
+      source: "api",
+      created_at: Date.now(),
+      vector_ids: '["g-active"]',
+    });
+    const ranked = [
+      ...Array.from({ length: 5 }, (_, index) => ({
+        id: `g-stale-${index}`,
+        score: 0.99 - index * 0.001,
+        metadata: { parentId: "existing", content: "Active duplicate" },
+      })),
+      {
+        id: "g-active",
+        score: 0.96,
+        metadata: { parentId: "existing", content: "Active duplicate" },
+      },
+    ];
+    const queryMock = vi.fn().mockImplementation(
+      async (_values: number[], options: { topK: number }) => ({
+        matches: ranked.slice(0, options.topK),
+      })
+    );
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({ query: queryMock }),
+    });
+
+    const { ctx } = makeCtx();
+    const response = await worker.fetch(
+      req("POST", "/capture", { body: { content: "Active duplicate" } }),
+      env,
+      ctx
+    );
+    const data = await response.json() as any;
+
+    expect(data.duplicate).toBe(true);
+    expect(data.matchId).toBe("existing");
+    expect(queryMock).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.objectContaining({ topK: 50 })
+    );
   });
 
   it("extracts hashtags from content and stores clean content with tags", async () => {
@@ -118,7 +240,15 @@ describe("POST /capture", () => {
     expect(tags).toContain("task");
   });
 
-  it("stores flagged duplicate (score 0.85–0.94) with duplicate-candidate tag", async () => {
+  it("stores flagged similarity as a linked memory with duplicate-candidate tag", async () => {
+    db.entries.push({
+      id: "near",
+      content: "Near existing note",
+      tags: "[]",
+      source: "api",
+      created_at: Date.now(),
+      vector_ids: '["near"]',
+    });
     const vectorize = makeVectorizeMock({
       query: vi.fn().mockResolvedValue({
         matches: [{ id: "near", score: 0.88, metadata: { parentId: "near" } }],
@@ -130,9 +260,11 @@ describe("POST /capture", () => {
     const res = await worker.fetch(req("POST", "/capture", { body: { content: "Similar note" } }), env, ctx);
     const data = await res.json() as any;
     expect(data.ok).toBe(true);
-    expect(data.warning).toBe("similar");
-    expect(db.entries).toHaveLength(1);
-    const tags = JSON.parse(db.entries[0].tags);
+    expect(data.action).toBe("linked");
+    expect(data.relation).toBe("similar");
+    expect(data.linked_id).toBe("near");
+    expect(db.entries).toHaveLength(2);
+    const tags = JSON.parse(db.entries.find((entry) => entry.id === data.id)!.tags);
     expect(tags).toContain("duplicate-candidate");
   });
 });

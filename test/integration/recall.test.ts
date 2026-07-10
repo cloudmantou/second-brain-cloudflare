@@ -133,6 +133,121 @@ describe("GET /recall", () => {
     expect(typeof data.insight === "string" || data.insight === null).toBe(true);
   });
 
+  it("ignores stale vectors that are no longer referenced by the D1 entry", async () => {
+    db.entries.push({
+      id: "entry-1",
+      content: "Current unrelated content",
+      tags: "[]",
+      source: "api",
+      created_at: Date.now(),
+      vector_ids: '["g-current"]',
+      recall_count: 0,
+      importance_score: 0,
+    });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({
+          matches: [makeMatch("g-stale", 0.99, {
+            parentId: "entry-1",
+            content: "legacy-only topic",
+          })],
+        }),
+      }),
+    });
+
+    const response = await worker.fetch(
+      req("GET", "/recall?query=legacy-only%20topic"),
+      env,
+      ctx
+    );
+    const data = await response.json() as any;
+
+    expect(response.status).toBe(200);
+    expect(data.results).toEqual([]);
+  });
+
+  it("overfetches before filtering so stale top results do not hide an active semantic match", async () => {
+    db.entries.push({
+      id: "entry-1",
+      content: "Current semantic result",
+      tags: "[]",
+      source: "api",
+      created_at: Date.now(),
+      vector_ids: '["g-active"]',
+      recall_count: 0,
+      importance_score: 0,
+    });
+    const ranked = [
+      ...Array.from({ length: 5 }, (_, index) => makeMatch(`g-stale-${index}`, 0.99 - index * 0.001, {
+        parentId: "entry-1",
+      })),
+      makeMatch("g-active", 0.9, { parentId: "entry-1" }),
+    ];
+    const queryMock = vi.fn().mockImplementation(
+      async (_values: number[], options: { topK: number }) => ({
+        matches: ranked.slice(0, options.topK),
+      })
+    );
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({ query: queryMock }),
+    });
+
+    const response = await worker.fetch(
+      req("GET", "/recall?query=semantic-needle&topK=1"),
+      env,
+      ctx
+    );
+    const data = await response.json() as any;
+
+    expect(data.results).toHaveLength(1);
+    expect(data.results[0].id).toBe("entry-1");
+    expect(queryMock).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.objectContaining({ topK: 50 })
+    );
+  });
+
+  it("does not let a newer deprecated keyword hit consume the final topK slot", async () => {
+    const now = Date.now();
+    db.entries.push(
+      {
+        id: "deprecated",
+        content: "needle exact identifier",
+        tags: '["status:deprecated"]',
+        source: "api",
+        created_at: now,
+        vector_ids: "[]",
+        recall_count: 0,
+        importance_score: 0,
+      },
+      {
+        id: "active",
+        content: "needle exact identifier",
+        tags: "[]",
+        source: "api",
+        created_at: now - 1000,
+        vector_ids: "[]",
+        recall_count: 0,
+        importance_score: 0,
+      }
+    );
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        query: vi.fn().mockResolvedValue({ matches: [] }),
+      }),
+    });
+
+    const response = await worker.fetch(
+      req("GET", "/recall?query=needle%20exact%20identifier&topK=1"),
+      env,
+      ctx
+    );
+    const data = await response.json() as any;
+
+    expect(data.results).toHaveLength(1);
+    expect(data.results[0].id).toBe("active");
+  });
+
   it("dedupes matches that share the same parentId", async () => {
     db.entries.push(
       { id: "entry-1", content: "Chunked memory", tags: "[]", source: "api", created_at: 1000, vector_ids: "[]", recall_count: 0, importance_score: 0 },
@@ -508,7 +623,7 @@ describe("GET /recall", () => {
       VECTORIZE: makeVectorizeMock({
         // captureEntry uses this query mock to find the near-match during capture
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "old-fact", score: 0.72, metadata: { parentId: "old-fact" } }],
+          matches: [{ id: "old-fact-vec", score: 0.72, metadata: { parentId: "old-fact" } }],
         }),
         deleteByIds: deleteByIdsMock,
       }),
@@ -526,6 +641,10 @@ describe("GET /recall", () => {
     const winnerRow = db.entries.find(e => e.id === winnerId);
     expect(winnerRow).toBeDefined();
     expect(winnerRow!.contradiction_wins).toBe(1); // written by production, not seeded
+    // This test stubs away waitUntil vectorization, so mark the two mocked dense
+    // vectors as active before exercising the real recall/rerank path.
+    winnerRow!.vector_ids = JSON.stringify([winnerId]);
+    db.entries.find(e => e.id === "peer")!.vector_ids = '["peer"]';
 
     // Phase 2 — RECALL: the shared db now has winner (wins=1, imp=0) and peer (wins=0, imp=3).
     // Configure Vectorize to return [peer first, winner second] at equal score 0.9 —

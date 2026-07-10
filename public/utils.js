@@ -172,6 +172,30 @@ function createCfSseParser(handlers) {
   };
 }
 
+/* Parse a state-changing REST response and enforce its { ok: true } contract.
+ * The response body is never reflected on malformed/non-JSON failures because
+ * upstream HTML can contain private diagnostics.
+ */
+async function parseApiJsonResponse(response, fallbackMessage, options) {
+  const fallback = fallbackMessage || 'Request failed';
+  let data;
+  try {
+    data = await response.json();
+  } catch (_) {
+    throw new Error(`${fallback} (HTTP ${response.status})`);
+  }
+
+  const acceptedDuplicate = response.ok && options && options.allowDuplicate === true
+    && data && data.duplicate === true;
+  if (!acceptedDuplicate && (!response.ok || !data || data.ok !== true)) {
+    const message = data && typeof data.error === 'string' && data.error.trim()
+      ? data.error.trim()
+      : `${fallback} (HTTP ${response.status})`;
+    throw new Error(message);
+  }
+  return data;
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     escHtml,
@@ -180,5 +204,6 @@ if (typeof module !== 'undefined' && module.exports) {
     parseRecallResult,
     normalizeEntry,
     createCfSseParser,
+    parseApiJsonResponse,
   };
 }

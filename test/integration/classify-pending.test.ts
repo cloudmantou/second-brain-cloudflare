@@ -128,12 +128,12 @@ describe("POST /classify-pending", () => {
     expect(neither).toContain("kind:episodic");
   });
 
-  it("does not touch importance_score (tags-only backfill)", async () => {
+  it("backfills importance_score together with status and kind", async () => {
     env = makeTestEnv(db, { AI: makeClassifyingAIMock({ importance: 5, canonical: true, kind: "semantic" }) });
     db.entries.push(unclassifiedEntry("importance-check"));
     await worker.fetch(req("POST", "/classify-pending"), env, ctx);
     const updated = db.entries.find((e: any) => e.id === "importance-check");
-    expect(updated.importance_score).toBe(0);
+    expect(updated.importance_score).toBe(5);
   });
 
   it("counts failed and continues when a row can't be updated (e.g. corrupt tags JSON)", async () => {

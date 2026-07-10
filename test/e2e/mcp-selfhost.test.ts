@@ -194,6 +194,49 @@ describe("self-host MCP and personal OAuth", () => {
     );
   });
 
+  it("updates a remembered fact through MCP and exposes the committed version", async () => {
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`${baseUrl}/mcp`),
+      { requestInit: { headers: { Authorization: `Bearer ${AUTH_TOKEN}` } } }
+    );
+    const client = new Client({ name: "selfhost-update-e2e", version: "1.0.0" });
+    await client.connect(transport);
+
+    try {
+      const remembered = (await client.callTool({
+        name: "remember",
+        arguments: {
+          content: "MCP version switch original",
+          tags: ["e2e"],
+          source: "e2e",
+        },
+      })) as any;
+      const rememberText = remembered.content?.find((part: any) => part.type === "text")?.text ?? "";
+      const id = rememberText.match(/ID:\s*([0-9a-f-]{36})/i)?.[1];
+      expect(id).toBeTruthy();
+
+      // The initial vector write is scheduled through waitUntil; allow it to
+      // settle before exercising the explicit version switch.
+      await delay(100);
+      const updated = (await client.callTool({
+        name: "update",
+        arguments: { id, content: "MCP version switch updated" },
+      })) as any;
+      expect(updated.isError).not.toBe(true);
+
+      const listed = await fetch(`${baseUrl}/list?n=100`, {
+        headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+      });
+      expect(listed.status).toBe(200);
+      const entries = (await listed.json()) as Array<{ id: string; content: string }>;
+      expect(entries.find((entry) => entry.id === id)?.content).toBe(
+        "MCP version switch updated"
+      );
+    } finally {
+      await client.close();
+    }
+  });
+
   it("completes owner-only OAuth with PKCE and revokes the issued token", async () => {
     const redirectUri = "https://chatgpt.com/aip/callback";
     const registration = await fetch(`${baseUrl}/oauth/register`, {

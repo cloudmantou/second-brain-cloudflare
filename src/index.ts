@@ -80,6 +80,7 @@ import {
 } from "./memory/relations";
 import {
   prepareMemoryRevision,
+  type MemoryRevisionEvent,
 } from "./memory/revisions";
 
 export interface Env {
@@ -504,6 +505,48 @@ export type MergeAction =
   | { action: "replace"; target_id: string }
   | { action: "merge"; target_id: string };
 
+async function filterActiveVectorMatches(
+  matches: VectorizeMatch[],
+  env: Env
+): Promise<VectorizeMatch[]> {
+  if (!matches.length) return [];
+  const parentIds = [...new Set(
+    matches.map(match => ((match.metadata as any)?.parentId ?? match.id) as string)
+  )];
+  const activeByParent = new Map<string, Set<string>>();
+
+  for (let i = 0; i < parentIds.length; i += D1_MAX_BOUND_PARAMS) {
+    const batch = parentIds.slice(i, i + D1_MAX_BOUND_PARAMS);
+    const placeholders = batch.map(() => "?").join(", ");
+    const { results: rows } = await env.DB.prepare(
+      `SELECT id, vector_ids, tags FROM entries WHERE id IN (${placeholders})`
+    ).bind(...batch).all() as { results: Array<{ id: string; vector_ids: string; tags: string }> };
+    for (const row of rows) {
+      try {
+        const tags = JSON.parse(row.tags ?? "[]");
+        if (Array.isArray(tags) && (
+          tags.includes("status:deprecated") || tags.includes("auto-pattern")
+        )) {
+          activeByParent.set(row.id, new Set());
+          continue;
+        }
+        const ids = JSON.parse(row.vector_ids ?? "[]");
+        activeByParent.set(
+          row.id,
+          new Set(Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [])
+        );
+      } catch {
+        activeByParent.set(row.id, new Set());
+      }
+    }
+  }
+
+  return matches.filter((match) => {
+    const parentId = ((match.metadata as any)?.parentId ?? match.id) as string;
+    return activeByParent.get(parentId)?.has(match.id) === true;
+  });
+}
+
 // Merges duplicate detection, contradiction detection, and smart merge into a
 // single embed + Vectorize query. For flagged entries (0.85–0.95) the combined
 // prompt replaces the contradiction-only prompt — same number of LLM calls.
@@ -514,7 +557,11 @@ export async function checkDuplicateAndContradiction(content: string, env: Env):
 }> {
   const sample = getDuplicateCheckSample(content);
   const values = await embed(sample, env);
-  const { matches } = await env.VECTORIZE.query(values, { topK: 5, returnMetadata: "all" });
+  const queried = await env.VECTORIZE.query(values, { topK: 50, returnMetadata: "all" });
+  const matches = (await filterActiveVectorMatches(
+    queried.matches as VectorizeMatch[],
+    env
+  )).slice(0, 5);
 
   // ── Duplicate: derived from top match ───────────────────────────────────────
   let duplicate: DuplicateResult = { status: "unique" };
@@ -712,7 +759,7 @@ export function rerankWithTimeDecay(
       // Without the cap, high recall counts overwhelm recency and bury newly-stored memories.
       const frequencyMultiplier = 1 + Math.log1p(rc);
       const combinedMultiplier = Math.min(1.0, recencyMultiplier * frequencyMultiplier);
-      const isShortAppend = match.id.includes("-update-") &&
+      const isShortAppend = meta?.isUpdate === true &&
         typeof meta?.content === "string" && meta.content.length < CHUNK_OVERLAP_CHARS;
       const appendPenalty = isShortAppend ? 0.2 : 1.0;
       const rolledUpPenalty = tags.includes("rolled-up") ? 0.4 : 1.0;
@@ -964,18 +1011,31 @@ async function listRecentActivity(
     }));
 }
 
-// ─── Store entry (full embed + chunk) ────────────────────────────────────────
-// Returns the list of vector IDs inserted so forget() can clean up exactly.
+interface PreparedEntryVectors {
+  vectors: Array<{
+    id: string;
+    values: number[];
+    metadata: Record<string, any>;
+  }>;
+  vectorIds: string[];
+}
 
-async function storeEntry(
+function createVectorGeneration(): string {
+  return crypto.randomUUID();
+}
+
+/** Build all chunks and embeddings without changing D1 or Vectorize. */
+async function prepareEntryVectors(
   env: Env,
   id: string,
   content: string,
   tags: string[],
   source: string,
-  now: number
-): Promise<string[]> {
+  now: number,
+  generation?: string
+): Promise<PreparedEntryVectors> {
   const chunks = chunkText(content);
+  const vectorBaseId = generation ? `g-${generation}` : id;
 
   const vectors = await Promise.all(
     chunks.map(async (chunk, i) => {
@@ -994,32 +1054,208 @@ async function storeEntry(
       });
 
       return {
-        id: chunks.length === 1 ? id : `${id}-chunk-${i}`,
+        id: chunks.length === 1 ? vectorBaseId : `${vectorBaseId}-chunk-${i}`,
         values: await embed(chunk, env),
         metadata,
       };
     })
   );
 
-  await env.VECTORIZE.insert(vectors);
-
-  const vectorIds = vectors.map(v => v.id);
-
-  // Persist exact vector IDs so forget() can clean up without guessing
-  await env.DB.prepare(
-    `UPDATE entries SET vector_ids = ? WHERE id = ?`
-  ).bind(JSON.stringify(vectorIds), id).run();
-
-  return vectorIds;
+  return { vectors, vectorIds: vectors.map((vector) => vector.id) };
 }
 
-// Delete vectors that are no longer referenced after a re-embed. Ids reused by
-// the new embedding must survive: single-chunk entries are keyed by the entry
-// id, so the re-embedded vector reuses the old id. Deleting the full old set
-// would remove the vector we just inserted, leaving the entry unsearchable.
+async function insertPreparedVectors(
+  env: Env,
+  prepared: PreparedEntryVectors
+): Promise<void> {
+  await env.VECTORIZE.insert(prepared.vectors);
+}
+
+async function cleanupPreparedVectors(
+  env: Env,
+  vectorIds: string[],
+  context: string
+): Promise<void> {
+  if (!vectorIds.length) return;
+  try {
+    await env.VECTORIZE.deleteByIds(vectorIds);
+  } catch (error) {
+    console.error(`${context} vector compensation failed:`, error);
+  }
+}
+
+// ─── Store entry (full embed + chunk) ────────────────────────────────────────
+// Returns the list of vector IDs inserted so forget() can clean up exactly.
+
+async function storeEntry(
+  env: Env,
+  id: string,
+  content: string,
+  tags: string[],
+  source: string,
+  now: number
+): Promise<string[]> {
+  const prepared = await prepareEntryVectors(
+    env,
+    id,
+    content,
+    tags,
+    source,
+    now,
+    createVectorGeneration()
+  );
+  try {
+    await insertPreparedVectors(env, prepared);
+  } catch (error) {
+    await cleanupPreparedVectors(env, prepared.vectorIds, "Initial vector insert");
+    throw error;
+  }
+
+  try {
+    // Initial vectorization runs in waitUntil() and can finish after a manual
+    // update has already activated a newer generation. Commit only while the
+    // entry still points at the empty generation; a stale writer must never
+    // move the pointer backwards.
+    const result = await env.DB.prepare(
+      `UPDATE entries
+       SET vector_ids = ?
+       WHERE id = ? AND vector_ids = ? AND content = ?
+         AND tags NOT LIKE '%"status:deprecated"%'`
+    ).bind(JSON.stringify(prepared.vectorIds), id, "[]", content).run();
+    if (result.meta?.changes === 0) {
+      await cleanupPreparedVectors(env, prepared.vectorIds, "Stale initial vector write");
+      return [];
+    }
+  } catch (error) {
+    await cleanupPreparedVectors(env, prepared.vectorIds, "Initial vector write");
+    throw error;
+  }
+
+  return prepared.vectorIds;
+}
+
+// Delete vectors that are no longer referenced after a re-embed. Generations
+// are unique, but retain the set difference so legacy/repaired rows remain safe.
 async function deleteStaleVectors(env: Env, oldIds: string[], newIds: string[]): Promise<void> {
   const stale = oldIds.filter(v => !newIds.includes(v));
   if (stale.length) await env.VECTORIZE.deleteByIds(stale);
+}
+
+interface CommitEntryVersionInput {
+  id: string;
+  oldContent: string;
+  newContent: string;
+  oldTags: string[];
+  newTags: string[];
+  source: string;
+  eventType: Extract<MemoryRevisionEvent, "UPDATE" | "APPEND">;
+  actor: string;
+  reason?: string;
+}
+
+/**
+ * Compensating transaction across Vectorize and D1:
+ * 1. build and insert a unique new vector generation;
+ * 2. atomically switch D1 content/vector_ids and append its revision;
+ * 3. clean the old generation only after the D1 switch succeeds.
+ */
+async function commitEntryVersion(
+  env: Env,
+  input: CommitEntryVersionInput
+): Promise<string[]> {
+  const now = Date.now();
+  const prepared = await prepareEntryVectors(
+    env,
+    input.id,
+    input.newContent,
+    input.newTags,
+    input.source,
+    now,
+    createVectorGeneration()
+  );
+
+  try {
+    await insertPreparedVectors(env, prepared);
+  } catch (error) {
+    await cleanupPreparedVectors(env, prepared.vectorIds, "Version vector insert");
+    throw error;
+  }
+
+  let activeOldVectorIds: string[];
+  let activeTagsJson: string;
+  try {
+    // Embedding can take long enough for the background initial vectorization
+    // to advance only the index pointer. Adopt that newer pointer when the
+    // content is unchanged; reject an actual concurrent content write.
+    const current = await env.DB.prepare(
+      `SELECT content, tags, vector_ids FROM entries WHERE id = ?`
+    ).bind(input.id).first() as Record<string, any> | null;
+    if (!current || current.content !== input.oldContent) {
+      throw new Error("Entry content changed while vectors were being prepared");
+    }
+    const currentTags = JSON.parse(current.tags ?? "[]") as string[];
+    if (JSON.stringify(currentTags) !== JSON.stringify(input.oldTags)) {
+      throw new Error("Entry tags changed while vectors were being prepared");
+    }
+    activeTagsJson = current.tags ?? "[]";
+    activeOldVectorIds = JSON.parse(current.vector_ids ?? "[]");
+  } catch (error) {
+    await cleanupPreparedVectors(env, prepared.vectorIds, "Version refresh");
+    throw error;
+  }
+
+  const revision = prepareMemoryRevision(env.DB, {
+    memoryId: input.id,
+    eventType: input.eventType,
+    oldContent: input.oldContent,
+    newContent: input.newContent,
+    oldMetadata: { tags: input.oldTags, source: input.source },
+    newMetadata: { tags: input.newTags, source: input.source },
+    reason: input.reason,
+    actor: input.actor,
+    createdAt: now,
+  }, {
+    activeVectorIdsJson: JSON.stringify(prepared.vectorIds),
+  });
+
+  let switchResult: D1Result;
+  try {
+    const results = await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE entries
+         SET content = ?, tags = ?, vector_ids = ?
+         WHERE id = ? AND content = ? AND tags = ? AND vector_ids = ?`
+      ).bind(
+        input.newContent,
+        JSON.stringify(input.newTags),
+        JSON.stringify(prepared.vectorIds),
+        input.id,
+        input.oldContent,
+        activeTagsJson,
+        JSON.stringify(activeOldVectorIds)
+      ),
+      revision.statement,
+    ]);
+    switchResult = results[0];
+  } catch (error) {
+    await cleanupPreparedVectors(env, prepared.vectorIds, "Version switch");
+    throw error;
+  }
+  if (switchResult.meta?.changes === 0) {
+    await cleanupPreparedVectors(env, prepared.vectorIds, "Stale version switch");
+    throw new Error("Entry changed while the new vector generation was being prepared");
+  }
+
+  try {
+    await deleteStaleVectors(env, activeOldVectorIds, prepared.vectorIds);
+  } catch (error) {
+    // The new generation is already active. Retrieval validates every dense
+    // match against D1 vector_ids, so these old vectors become excluded cleanup
+    // debt; never roll back the committed fact merely to hide that debt.
+    console.error("Old vector cleanup failed (non-fatal):", error);
+  }
+
+  return prepared.vectorIds;
 }
 
 // ─── Append to existing entry ─────────────────────────────────────────────────
@@ -1037,12 +1273,9 @@ async function appendToEntry(
   tags: string[],
   source: string
 ): Promise<void> {
-  // Read existing vector_ids upfront — needed by both paths
-  const row = await env.DB.prepare(
-    `SELECT vector_ids FROM entries WHERE id = ?`
-  ).bind(id).first() as Record<string, any> | null;
-
-  const existingVectorIds: string[] = JSON.parse(row?.vector_ids ?? "[]");
+  if (getStatus(tags) === "deprecated") {
+    throw new Error("Cannot append to a deprecated memory");
+  }
 
   const timestamp = new Date().toLocaleDateString();
   const separator = `\n\n[Update ${timestamp}]: `;
@@ -1050,45 +1283,24 @@ async function appendToEntry(
 
   if (newContent.length > CHUNK_MAX_CHARS) {
     // ── Full re-embed path ───────────────────────────────────────────────────
-    // Combined content is too large for a single vector — re-chunk everything.
-    // Same safe ordering as update/merge/replace: insert new → delete old.
-
-    // Step 1: Persist content and its permanent audit record atomically.
-    const appendRevision = prepareMemoryRevision(env.DB, {
-      memoryId: id,
-      eventType: "APPEND",
+    // Combined content is too large for a single vector. Build and insert a new
+    // generation first; only then switch D1 and retire the old generation.
+    await commitEntryVersion(env, {
+      id,
       oldContent: existingContent,
       newContent,
-      oldMetadata: { tags, source },
-      newMetadata: { tags, source },
+      oldTags: tags,
+      newTags: tags,
+      source,
+      eventType: "APPEND",
       actor: source,
+      reason: "Large append required full re-embedding",
     });
-    await env.DB.batch([
-      env.DB.prepare(`UPDATE entries SET content = ? WHERE id = ?`).bind(newContent, id),
-      appendRevision.statement,
-    ]);
-
-    // Step 2: Re-chunk + re-embed full content (also updates vector_ids in D1)
-    let newVectorIds: string[] = [];
-    try {
-      newVectorIds = await storeEntry(env, id, newContent, tags, source, Date.now());
-    } catch (e) {
-      console.error("Vectorize re-embed failed (non-fatal):", e);
-    }
-
-    // Step 3: Delete only stale vectors — ids reused by the re-embed must survive
-    try {
-      await deleteStaleVectors(env, existingVectorIds, newVectorIds);
-    } catch (e) {
-      console.error("Old vector cleanup failed (non-fatal):", e);
-    }
-
     return;
   }
 
   // ── Normal append-only path (combined content ≤ CHUNK_MAX_CHARS) ────────────
-  // Timestamp-based suffix guarantees uniqueness across concurrent appends
-  const newChunkId = `${id}-update-${Date.now()}`;
+  const newChunkId = `u-${createVectorGeneration()}`;
 
   const values = await embed(addition, env);
 
@@ -1105,11 +1317,36 @@ async function appendToEntry(
     metadata[`tag_${t}`] = true;
   });
 
-  await env.VECTORIZE.insert([{
-    id: newChunkId,
-    values,
-    metadata,
-  }]);
+  try {
+    await env.VECTORIZE.insert([{
+      id: newChunkId,
+      values,
+      metadata,
+    }]);
+  } catch (error) {
+    await cleanupPreparedVectors(env, [newChunkId], "Append vector insert");
+    throw error;
+  }
+
+  let activeVectorIds: string[];
+  let activeTagsJson: string;
+  try {
+    const current = await env.DB.prepare(
+      `SELECT content, tags, vector_ids FROM entries WHERE id = ?`
+    ).bind(id).first() as Record<string, any> | null;
+    if (!current || current.content !== existingContent) {
+      throw new Error("Entry content changed while the append vector was being prepared");
+    }
+    const currentTags = JSON.parse(current.tags ?? "[]") as string[];
+    if (getStatus(currentTags) === "deprecated") {
+      throw new Error("Cannot append to a deprecated memory");
+    }
+    activeTagsJson = current.tags ?? "[]";
+    activeVectorIds = JSON.parse(current.vector_ids ?? "[]");
+  } catch (error) {
+    await cleanupPreparedVectors(env, [newChunkId], "Append refresh");
+    throw error;
+  }
 
   const appendRevision = prepareMemoryRevision(env.DB, {
     memoryId: id,
@@ -1119,13 +1356,35 @@ async function appendToEntry(
     oldMetadata: { tags, source },
     newMetadata: { tags, source },
     actor: source,
+  }, {
+    activeVectorIdsJson: JSON.stringify([...activeVectorIds, newChunkId]),
   });
-  await env.DB.batch([
-    env.DB.prepare(
-      `UPDATE entries SET content = ?, vector_ids = ? WHERE id = ?`
-    ).bind(newContent, JSON.stringify([...existingVectorIds, newChunkId]), id),
-    appendRevision.statement,
-  ]);
+  let switchResult: D1Result;
+  try {
+    const results = await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE entries
+         SET content = ?, vector_ids = ?
+         WHERE id = ? AND content = ? AND tags = ? AND vector_ids = ?`
+      ).bind(
+        newContent,
+        JSON.stringify([...activeVectorIds, newChunkId]),
+        id,
+        existingContent,
+        activeTagsJson,
+        JSON.stringify(activeVectorIds)
+      ),
+      appendRevision.statement,
+    ]);
+    switchResult = results[0];
+  } catch (error) {
+    await cleanupPreparedVectors(env, [newChunkId], "Append");
+    throw error;
+  }
+  if (switchResult.meta?.changes === 0) {
+    await cleanupPreparedVectors(env, [newChunkId], "Stale append");
+    throw new Error("Entry changed while the append vector was being prepared");
+  }
 }
 
 // ─── Synthesize insight from retrieved memories ───────────────────────────────
@@ -1444,7 +1703,11 @@ async function keywordSearch(tokens: string[], env: Env): Promise<KeywordRow[]> 
   if (!tokens.length) return [];
   const where = tokens.map(() => "content LIKE ?").join(" OR ");
   const { results } = await env.DB.prepare(
-    `SELECT id, content, tags, source, created_at FROM entries WHERE ${where} ORDER BY created_at DESC LIMIT ?`
+    `SELECT id, content, tags, source, created_at FROM entries
+     WHERE (${where})
+       AND tags NOT LIKE '%"status:deprecated"%'
+       AND tags NOT LIKE '%"auto-pattern"%'
+     ORDER BY created_at DESC LIMIT ?`
   ).bind(...tokens.map(t => `%${t}%`), KEYWORD_CANDIDATE_LIMIT).all();
   return results as unknown as KeywordRow[];
 }
@@ -1527,13 +1790,17 @@ export async function recallEntries(
 
   let keywordRows: KeywordRow[] = [];
   let results: { matches: VectorizeMatch[] };
+  let denseLogicalLimit = 50;
   if (tag) {
     // Tag path: score the tag's own vectors directly. An unconstrained Vectorize
     // query caps at 50 candidates, silently dropping tagged entries whose global
     // semantic rank falls outside the top 50 (issue #141). D1 is the source of
     // truth for tags and already stores each entry's vector_ids.
     const { results: tagRows } = await env.DB.prepare(
-      `SELECT id, vector_ids, content, tags, source, created_at FROM entries WHERE tags LIKE ?`
+      `SELECT id, vector_ids, content, tags, source, created_at FROM entries
+       WHERE tags LIKE ?
+         AND tags NOT LIKE '%"status:deprecated"%'
+         AND tags NOT LIKE '%"auto-pattern"%'`
     ).bind(`%"${tag}"%`).all();
     if (!tagRows.length) return { matches: [], insight: "" };
     keywordRows = tagRows as unknown as KeywordRow[];
@@ -1557,21 +1824,30 @@ export async function recallEntries(
     };
   } else {
     // Cloudflare Vectorize caps topK at 50 when returnMetadata="all" (error 40025).
-    // Run the keyword search in parallel with the dense query.
-    const vectorizeTopK = Math.min(topK * VECTORIZE_TOP_K_MULTIPLIER, 50);
+    // Overfetch before validating active generations so stale cleanup debt cannot
+    // consume the entire logical candidate window.
+    denseLogicalLimit = Math.min(topK * VECTORIZE_TOP_K_MULTIPLIER, 50);
     const [denseResults, kwRows] = await Promise.all([
-      env.VECTORIZE.query(values, { topK: vectorizeTopK, returnMetadata: "all" }),
+      env.VECTORIZE.query(values, { topK: 50, returnMetadata: "all" }),
       keywordSearch(tokens, env),
     ]);
     results = denseResults;
     keywordRows = kwRows;
+  }
 
-    if (results.matches.length && results.matches[0].score < DUPLICATE_FLAG_THRESHOLD) {
-      results = await env.VECTORIZE.query(values, {
-        topK: 50,
-        returnMetadata: "all",
-      });
-    }
+  if (!tag && results.matches.length) {
+    // Vector cleanup is compensating and can fail after D1 has already switched
+    // to a newer generation. D1 vector_ids is therefore the authoritative
+    // active-set pointer: stale/orphaned vectors must not influence fusion or
+    // return unrelated current content for an old embedding.
+    const activeMatches = await filterActiveVectorMatches(
+      results.matches as VectorizeMatch[],
+      env
+    );
+    const activeLimit = activeMatches.length && activeMatches[0].score < DUPLICATE_FLAG_THRESHOLD
+      ? 50
+      : denseLogicalLimit;
+    results = { matches: activeMatches.slice(0, activeLimit) };
   }
 
   // Always-on hybrid retrieval: fuse dense + keyword candidates via RRF. On the tag path
@@ -2099,9 +2375,10 @@ function buildMcpServer(env: Env, ctx: ExecutionContext): McpServer {
         return { content: [{ type: "text", text: "Content cannot be empty." }] };
       }
 
-      // Read current row upfront — need tags, source, AND old vector_ids before any mutation
+      // Read the semantic version upfront; vector_ids are refreshed immediately
+      // before the guarded switch because background indexing may advance them.
       const row = await env.DB.prepare(
-        `SELECT content, tags, source, vector_ids FROM entries WHERE id = ?`
+        `SELECT content, tags, source FROM entries WHERE id = ?`
       ).bind(id).first() as Record<string, any> | null;
 
       if (!row) {
@@ -2112,43 +2389,33 @@ function buildMcpServer(env: Env, ctx: ExecutionContext): McpServer {
       const oldTags: string[] = JSON.parse(row.tags ?? "[]");
       const tags = oldTags.filter((t: string) => t !== "rolled-up");
       const source = row.source as string;
-      const oldVectorIds: string[] = JSON.parse(row.vector_ids ?? "[]");
 
-      // Step 1: Update the fact and its permanent audit record atomically.
-      const updateRevision = prepareMemoryRevision(env.DB, {
-        memoryId: id,
-        eventType: "UPDATE",
-        oldContent,
-        newContent,
-        oldMetadata: { tags: oldTags, source },
-        newMetadata: { tags, source },
-        reason: "Full content replaced through MCP",
-        actor: "mcp",
-      });
-      await env.DB.batch([
-        env.DB.prepare(`UPDATE entries SET content = ?, tags = ? WHERE id = ?`)
-          .bind(newContent, JSON.stringify(tags), id),
-        updateRevision.statement,
-      ]);
-
-      // Step 2: Re-embed new content → inserts new vectors + updates vector_ids in D1
-      let newVectorIds: string[] = [];
+      let newVectorIds: string[];
       try {
-        newVectorIds = await storeEntry(env, id, newContent, tags, source, Date.now());
-      } catch (e) {
-        console.error("Vectorize re-embed failed (non-fatal):", e);
-      }
-      const newVectorCount = newVectorIds.length;
-
-      // Step 3: Delete only stale vectors — ids reused by the re-embed must survive
-      try {
-        await deleteStaleVectors(env, oldVectorIds, newVectorIds);
-      } catch (e) {
-        console.error("Old vector cleanup failed (non-fatal):", e);
+        newVectorIds = await commitEntryVersion(env, {
+          id,
+          oldContent,
+          newContent,
+          oldTags,
+          newTags: tags,
+          source,
+          eventType: "UPDATE",
+          reason: "Full content replaced through MCP",
+          actor: "mcp",
+        });
+      } catch (error) {
+        console.error("Update vector switch failed:", error);
+        return {
+          content: [{
+            type: "text",
+            text: `Update failed for entry ${id}. The previous content and search index remain active.`,
+          }],
+          isError: true,
+        };
       }
 
       return {
-        content: [{ type: "text", text: `Updated entry ${id}. Re-embedded as ${newVectorCount} vector(s).` }],
+        content: [{ type: "text", text: `Updated entry ${id}. Re-embedded as ${newVectorIds.length} vector(s).` }],
       };
     }
   );
@@ -2663,7 +2930,7 @@ const defaultHandler = {
       const newContent = body.content.trim();
 
       const row = await env.DB.prepare(
-        `SELECT content, tags, source, vector_ids FROM entries WHERE id = ?`
+        `SELECT content, tags, source FROM entries WHERE id = ?`
       ).bind(id).first() as Record<string, any> | null;
 
       if (!row) return json({ ok: false, error: `No entry found with ID: ${id}` }, 404);
@@ -2673,40 +2940,30 @@ const defaultHandler = {
       const { cleanContent, hashtags: newHashtags } = extractHashtags(newContent);
       const mergedTags = [...new Set([...tags, ...newHashtags])];
       const source = row.source as string;
-      const oldVectorIds: string[] = JSON.parse(row.vector_ids ?? "[]");
       const finalContent = cleanContent || newContent;
 
-      const updateRevision = prepareMemoryRevision(env.DB, {
-        memoryId: id,
-        eventType: "UPDATE",
-        oldContent,
-        newContent: finalContent,
-        oldMetadata: { tags, source },
-        newMetadata: { tags: mergedTags, source },
-        reason: "Full content replaced through HTTP API",
-        actor: "api",
-      });
-      await env.DB.batch([
-        env.DB.prepare(`UPDATE entries SET content = ?, tags = ? WHERE id = ?`)
-          .bind(finalContent, JSON.stringify(mergedTags), id),
-        updateRevision.statement,
-      ]);
-
-      let newVectorIds: string[] = [];
+      let newVectorIds: string[];
       try {
-        newVectorIds = await storeEntry(env, id, finalContent, mergedTags, source, Date.now());
-      } catch (e) {
-        console.error("Vectorize re-embed failed (non-fatal):", e);
-      }
-      const newVectorCount = newVectorIds.length;
-
-      try {
-        await deleteStaleVectors(env, oldVectorIds, newVectorIds);
-      } catch (e) {
-        console.error("Old vector cleanup failed (non-fatal):", e);
+        newVectorIds = await commitEntryVersion(env, {
+          id,
+          oldContent,
+          newContent: finalContent,
+          oldTags: tags,
+          newTags: mergedTags,
+          source,
+          eventType: "UPDATE",
+          reason: "Full content replaced through HTTP API",
+          actor: "api",
+        });
+      } catch (error) {
+        console.error("Update vector switch failed:", error);
+        return json({
+          ok: false,
+          error: "Update could not be indexed. Previous content remains active; retry later.",
+        }, 503);
       }
 
-      return json({ ok: true, id, vectors: newVectorCount });
+      return json({ ok: true, id, vectors: newVectorIds.length });
     }
 
     // GET /count
@@ -2735,7 +2992,9 @@ const defaultHandler = {
       const [summary, tagRows, candidateRows] = await Promise.all([
         env.DB.prepare(
           `SELECT COUNT(*) as count, AVG(importance_score) as avg_importance,
-           SUM(CASE WHEN vector_ids = '[]' AND created_at < ? THEN 1 ELSE 0 END) as unvectorized,
+           SUM(CASE WHEN vector_ids = '[]'
+                     AND tags NOT LIKE '%"status:deprecated"%'
+                     AND created_at < ? THEN 1 ELSE 0 END) as unvectorized,
            SUM(CASE WHEN tags NOT LIKE '%"status:%' AND tags NOT LIKE '%"kind:%' THEN 1 ELSE 0 END) as unclassified
            FROM entries`
         ).bind(graceCutoff).first() as Promise<Record<string, any> | null>,
@@ -3064,7 +3323,9 @@ const defaultHandler = {
 
       const { results: toProcess } = await env.DB.prepare(
         `SELECT id, content, tags, source, created_at FROM entries
-         WHERE vector_ids = '[]' AND created_at < ?
+         WHERE vector_ids = '[]'
+           AND tags NOT LIKE '%"status:deprecated"%'
+           AND created_at < ?
          ORDER BY created_at DESC LIMIT ?`
       ).bind(graceCutoff, limit).all();
 
@@ -3089,7 +3350,10 @@ const defaultHandler = {
       }
 
       const remaining = await env.DB.prepare(
-        `SELECT COUNT(*) as count FROM entries WHERE vector_ids = '[]' AND created_at < ?`
+        `SELECT COUNT(*) as count FROM entries
+         WHERE vector_ids = '[]'
+           AND tags NOT LIKE '%"status:deprecated"%'
+           AND created_at < ?`
       ).bind(graceCutoff).first() as Record<string, any> | null;
       const remainingN = (remaining?.count as number) ?? 0;
 
@@ -3117,7 +3381,8 @@ const defaultHandler = {
     // One-time, opt-in backfill: runs classifyEntry over entries that predate the
     // status (#119) and kind (#12) features and writes status:/kind: tags. Bounded
     // batch per call, idempotent (skips entries that already carry either tag), and
-    // resumable (safe to stop/restart). No schema migration — only writes tags.
+    // Resumable (safe to stop/restart). Backfills the same classification fields
+    // used for newly captured memories so historical rows rank consistently.
     if (url.pathname === "/classify-pending" && request.method === "POST") {
       const authErr = requireAuth(request, env);
       if (authErr) return authErr;
@@ -3135,11 +3400,13 @@ const defaultHandler = {
 
       for (const row of toProcess as Record<string, any>[]) {
         try {
-          const { canonical, kind } = await classifyEntry(row.content as string, env);
+          const { importance, canonical, kind } = await classifyEntry(row.content as string, env);
           let tags: string[] = JSON.parse(row.tags as string);
           if (kind) tags = withKind(tags, kind);
           if (canonical && getStatus(tags) === null) tags = withStatus(tags, "canonical");
-          await env.DB.prepare(`UPDATE entries SET tags = ? WHERE id = ?`).bind(JSON.stringify(tags), row.id).run();
+          await env.DB.prepare(
+            `UPDATE entries SET tags = ?, importance_score = ? WHERE id = ?`
+          ).bind(JSON.stringify(tags), importance, row.id).run();
           processed++;
         } catch (e) {
           console.error("Classification backfill failed for entry", row.id, e);

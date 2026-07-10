@@ -31,7 +31,7 @@ function makeEnv(aiResponse: string, vectorMatches: any[] = [], dbEntries: any[]
 }
 
 function entry(id: string, content: string) {
-  return { id, content, tags: "[]", source: "claude", created_at: Date.now(), vector_ids: "[]", recall_count: 0, importance_score: 0 };
+  return { id, content, tags: "[]", source: "claude", created_at: Date.now(), vector_ids: JSON.stringify([id]), recall_count: 0, importance_score: 0 };
 }
 
 function match(id: string, score: number) {

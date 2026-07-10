@@ -31,6 +31,11 @@ export interface MemoryRevisionRecord extends MemoryRevisionInput {
   createdAt: number;
 }
 
+export interface MemoryRevisionGuard {
+  /** JSON-encoded vector generation that must be active after the write. */
+  activeVectorIdsJson: string;
+}
+
 function buildMemoryRevision(input: MemoryRevisionInput): MemoryRevisionRecord {
   const memoryId = input.memoryId.trim();
   const actor = input.actor.trim();
@@ -47,32 +52,52 @@ function buildMemoryRevision(input: MemoryRevisionInput): MemoryRevisionRecord {
   };
 }
 
-function revisionStatement(db: D1Database, revision: MemoryRevisionRecord) {
-  return db
-    .prepare(
-      `INSERT INTO sb_memory_revisions (
+function revisionStatement(
+  db: D1Database,
+  revision: MemoryRevisionRecord,
+  guard?: MemoryRevisionGuard
+) {
+  const insert = `INSERT INTO sb_memory_revisions (
         id, memory_id, event_type, old_content, new_content,
         old_metadata_json, new_metadata_json, reason, actor, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )`;
+  const values = [
+    revision.id,
+    revision.memoryId,
+    revision.eventType,
+    revision.oldContent ?? null,
+    revision.newContent ?? null,
+    metadataJson(revision.oldMetadata),
+    metadataJson(revision.newMetadata),
+    revision.reason ?? null,
+    revision.actor,
+    revision.createdAt,
+  ];
+
+  if (guard) {
+    return db
+      .prepare(
+        `${insert}
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+         WHERE EXISTS (
+           SELECT 1 FROM entries WHERE id = ? AND vector_ids = ?
+         )`
+      )
+      .bind(...values, revision.memoryId, guard.activeVectorIdsJson);
+  }
+
+  return db
+    .prepare(
+      `${insert} VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .bind(
-      revision.id,
-      revision.memoryId,
-      revision.eventType,
-      revision.oldContent ?? null,
-      revision.newContent ?? null,
-      metadataJson(revision.oldMetadata),
-      metadataJson(revision.newMetadata),
-      revision.reason ?? null,
-      revision.actor,
-      revision.createdAt
-    );
+    .bind(...values);
 }
 
 export function prepareMemoryRevision(
   db: D1Database,
-  input: MemoryRevisionInput
+  input: MemoryRevisionInput,
+  guard?: MemoryRevisionGuard
 ) {
   const record = buildMemoryRevision(input);
-  return { record, statement: revisionStatement(db, record) };
+  return { record, statement: revisionStatement(db, record, guard) };
 }

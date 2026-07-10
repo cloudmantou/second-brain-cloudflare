@@ -110,6 +110,23 @@ describe("GET /stats — vectorization fields", () => {
     expect(data.unvectorized).toBe(2);
   });
 
+  it("does not count deprecated memories as pending vectorization", async () => {
+    db.entries.push({
+      id: "deprecated",
+      content: "retired",
+      tags: '["status:deprecated"]',
+      source: "api",
+      created_at: Date.now() - 600000,
+      vector_ids: "[]",
+      recall_count: 0,
+      importance_score: 0,
+    });
+
+    const response = await worker.fetch(req("GET", "/stats"), env, ctx);
+    const data = await response.json() as any;
+    expect(data.unvectorized).toBe(0);
+  });
+
   it("returns vectorize_grace_ms in response", async () => {
     const res = await worker.fetch(req("GET", "/stats"), env, ctx);
     const data = await res.json() as any;

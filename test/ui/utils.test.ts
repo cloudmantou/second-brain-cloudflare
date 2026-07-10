@@ -6,7 +6,77 @@ const {
   escAttr,
   toDateStr,
   createCfSseParser,
+  parseApiJsonResponse,
 } = require("../../public/utils.js");
+
+describe("parseApiJsonResponse", () => {
+  it("returns a successful REST payload", async () => {
+    const response = new Response(JSON.stringify({ ok: true, id: "memory-1" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+
+    await expect(parseApiJsonResponse(response, "Save failed")).resolves.toEqual({
+      ok: true,
+      id: "memory-1",
+    });
+  });
+
+  it("rejects an HTTP error with the server-safe message", async () => {
+    const response = new Response(
+      JSON.stringify({ ok: false, error: "Append failed. Retry later." }),
+      { status: 500, headers: { "Content-Type": "application/json" } }
+    );
+
+    await expect(parseApiJsonResponse(response, "Append failed")).rejects.toThrow(
+      "Append failed. Retry later."
+    );
+  });
+
+  it("rejects a 200 response whose API contract says ok:false", async () => {
+    const response = new Response(JSON.stringify({ ok: false, error: "Not stored" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+
+    await expect(parseApiJsonResponse(response, "Save failed")).rejects.toThrow(
+      "Not stored"
+    );
+  });
+
+  it("allows the capture duplicate outcome when explicitly requested", async () => {
+    const response = new Response(
+      JSON.stringify({ ok: false, duplicate: true, matchId: "existing" }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    );
+
+    await expect(
+      parseApiJsonResponse(response, "Save failed", { allowDuplicate: true })
+    ).resolves.toMatchObject({ duplicate: true, matchId: "existing" });
+  });
+
+  it("does not accept a duplicate body from a failed HTTP response", async () => {
+    const response = new Response(JSON.stringify({ duplicate: true }), {
+      status: 503,
+      headers: { "Content-Type": "application/json" },
+    });
+
+    await expect(
+      parseApiJsonResponse(response, "Save failed", { allowDuplicate: true })
+    ).rejects.toThrow("Save failed (HTTP 503)");
+  });
+
+  it("rejects malformed JSON without exposing the response body", async () => {
+    const response = new Response("<html>private upstream error</html>", {
+      status: 502,
+      headers: { "Content-Type": "text/html" },
+    });
+
+    await expect(parseApiJsonResponse(response, "Save failed")).rejects.toThrow(
+      "Save failed (HTTP 502)"
+    );
+  });
+});
 
 describe("createCfSseParser", () => {
   it("preserves a JSON event split across network chunks", () => {

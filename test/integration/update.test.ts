@@ -162,15 +162,14 @@ describe("POST /update", () => {
     );
     expect(insertMock).toHaveBeenCalledOnce();
     const insertedVectors = insertMock.mock.calls[0][0] as any[];
-    expect(insertedVectors[0].id).toBe("entry-abc");
+    expect(insertedVectors[0].id).not.toBe("entry-abc");
+    expect(insertedVectors[0].id).toMatch(/^g-[0-9a-f-]{36}(?:-chunk-\d+)?$/);
+    expect(insertedVectors[0].id.length).toBeLessThanOrEqual(64);
   });
 
   // ── Vector orphan prevention ────────────────────────────────────────────────
 
-  it("deletes only stale vectors, preserving the re-embedded (reused) id", async () => {
-    // Entry previously had 2 chunks. The short update re-embeds to a single
-    // chunk keyed by the entry id ("entry-abc"), which must NOT be deleted —
-    // only the now-orphaned "entry-abc-chunk-1" should be removed.
+  it("deletes the complete old generation after the new generation is committed", async () => {
     const deleteByIdsMock = vi.fn().mockResolvedValue({ mutationId: "m" });
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({ deleteByIds: deleteByIdsMock }),
@@ -183,12 +182,13 @@ describe("POST /update", () => {
     );
 
     expect(deleteByIdsMock).toHaveBeenCalledOnce();
-    expect(deleteByIdsMock.mock.calls[0][0]).toEqual(["entry-abc-chunk-1"]);
+    expect(deleteByIdsMock.mock.calls[0][0]).toEqual([
+      "entry-abc",
+      "entry-abc-chunk-1",
+    ]);
   });
 
-  it("does NOT delete the re-embedded single-chunk vector (id-reuse regression)", async () => {
-    // Single-chunk entry: vector id == entry id. The re-embed reuses that id,
-    // so there is nothing stale — deleting it would make the entry unsearchable.
+  it("deletes a single-vector old generation after switching to a unique new id", async () => {
     const deleteByIdsMock = vi.fn().mockResolvedValue({ mutationId: "m" });
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({ deleteByIds: deleteByIdsMock }),
@@ -200,7 +200,7 @@ describe("POST /update", () => {
       env, ctx
     );
 
-    expect(deleteByIdsMock).not.toHaveBeenCalled();
+    expect(deleteByIdsMock).toHaveBeenCalledWith(["entry-abc"]);
   });
 
   it("does not call deleteByIds when vector_ids is empty", async () => {
@@ -218,24 +218,32 @@ describe("POST /update", () => {
     expect(deleteByIdsMock).not.toHaveBeenCalled();
   });
 
-  // ── Non-fatal error handling ────────────────────────────────────────────────
+  // ── Failure-safe switching ──────────────────────────────────────────────────
 
-  it("returns ok:true even when Vectorize insert throws", async () => {
+  it("returns 503 and preserves the old fact when new vector insertion fails", async () => {
+    const insertMock = vi.fn().mockRejectedValue(new Error("Vectorize down"));
+    const deleteByIdsMock = vi.fn().mockResolvedValue({ mutationId: "m" });
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
-        insert: vi.fn().mockRejectedValue(new Error("Vectorize down")),
+        insert: insertMock,
+        deleteByIds: deleteByIdsMock,
       }),
     });
-    seedEntry(db);
+    seedEntry(db, { vector_ids: '["entry-abc"]' });
     const res = await worker.fetch(
       req("POST", "/update", { body: { id: "entry-abc", content: "Updated content" } }),
       env, ctx
     );
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(503);
     const data = await res.json() as any;
-    expect(data.ok).toBe(true);
-    // D1 content should still be updated
-    expect(db.entries[0].content).toBe("Updated content");
+    expect(data.ok).toBe(false);
+    expect(data.error).not.toContain("Vectorize down");
+    expect(db.entries[0].content).toBe("Original content");
+    expect(db.entries[0].vector_ids).toBe('["entry-abc"]');
+    expect(db.revisions).toHaveLength(0);
+    const preparedIds = (insertMock.mock.calls[0][0] as any[]).map((vector) => vector.id);
+    expect(deleteByIdsMock).toHaveBeenCalledWith(preparedIds);
+    expect(deleteByIdsMock).not.toHaveBeenCalledWith(["entry-abc"]);
   });
 
   it("returns ok:true even when deleteByIds throws", async () => {
@@ -254,18 +262,134 @@ describe("POST /update", () => {
     expect(data.ok).toBe(true);
   });
 
+  it("removes the prepared generation when the D1 version switch fails", async () => {
+    const insertMock = vi.fn().mockResolvedValue({ mutationId: "insert" });
+    const deleteByIdsMock = vi.fn().mockResolvedValue({ mutationId: "delete" });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        insert: insertMock,
+        deleteByIds: deleteByIdsMock,
+      }),
+    });
+    seedEntry(db, { vector_ids: '["old-vector"]' });
+    vi.spyOn(db, "batch").mockRejectedValueOnce(new Error("D1 unavailable"));
+
+    const res = await worker.fetch(
+      req("POST", "/update", { body: { id: "entry-abc", content: "Updated content" } }),
+      env,
+      ctx
+    );
+
+    const insertedIds = (insertMock.mock.calls[0][0] as any[]).map((vector) => vector.id);
+    expect(res.status).toBe(503);
+    expect(db.entries[0].content).toBe("Original content");
+    expect(db.entries[0].vector_ids).toBe('["old-vector"]');
+    expect(db.revisions).toHaveLength(0);
+    expect(deleteByIdsMock).toHaveBeenCalledWith(insertedIds);
+    expect(deleteByIdsMock).not.toHaveBeenCalledWith(["old-vector"]);
+  });
+
+  it("rejects a stale update instead of overwriting a concurrently committed version", async () => {
+    const insertMock = vi.fn().mockImplementation(async () => {
+      db.entries[0].content = "Concurrent content";
+      db.entries[0].vector_ids = '["concurrent-vector"]';
+      return { mutationId: "insert" };
+    });
+    const deleteByIdsMock = vi.fn().mockResolvedValue({ mutationId: "cleanup" });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        insert: insertMock,
+        deleteByIds: deleteByIdsMock,
+      }),
+    });
+    seedEntry(db, { vector_ids: '["old-vector"]' });
+
+    const response = await worker.fetch(
+      req("POST", "/update", { body: { id: "entry-abc", content: "Stale update" } }),
+      env,
+      ctx
+    );
+
+    const preparedIds = (insertMock.mock.calls[0][0] as any[]).map((vector) => vector.id);
+    expect(response.status).toBe(503);
+    expect(db.entries[0].content).toBe("Concurrent content");
+    expect(db.entries[0].vector_ids).toBe('["concurrent-vector"]');
+    expect(db.revisions).toHaveLength(0);
+    expect(deleteByIdsMock).toHaveBeenCalledWith(preparedIds);
+    expect(deleteByIdsMock).not.toHaveBeenCalledWith(["concurrent-vector"]);
+  });
+
+  it("adopts a late initial vector generation when the content is still current", async () => {
+    const insertMock = vi.fn().mockImplementation(async () => {
+      db.entries[0].vector_ids = '["background-vector"]';
+      return { mutationId: "insert" };
+    });
+    const deleteByIdsMock = vi.fn().mockResolvedValue({ mutationId: "cleanup" });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        insert: insertMock,
+        deleteByIds: deleteByIdsMock,
+      }),
+    });
+    seedEntry(db, { vector_ids: "[]" });
+
+    const response = await worker.fetch(
+      req("POST", "/update", { body: { id: "entry-abc", content: "Updated content" } }),
+      env,
+      ctx
+    );
+
+    expect(response.status).toBe(200);
+    expect(db.entries[0].content).toBe("Updated content");
+    expect(deleteByIdsMock).toHaveBeenCalledWith(["background-vector"]);
+  });
+
+  it("does not overwrite a lifecycle status changed while vectors are prepared", async () => {
+    const insertMock = vi.fn().mockImplementation(async () => {
+      db.entries[0].tags = '["work","status:deprecated"]';
+      db.entries[0].vector_ids = "[]";
+      return { mutationId: "insert" };
+    });
+    const deleteByIdsMock = vi.fn().mockResolvedValue({ mutationId: "cleanup" });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        insert: insertMock,
+        deleteByIds: deleteByIdsMock,
+      }),
+    });
+    seedEntry(db, { tags: '["work"]', vector_ids: '["old-vector"]' });
+
+    const response = await worker.fetch(
+      req("POST", "/update", { body: { id: "entry-abc", content: "Stale update" } }),
+      env,
+      ctx
+    );
+
+    const preparedIds = (insertMock.mock.calls[0][0] as any[]).map((vector) => vector.id);
+    expect(response.status).toBe(503);
+    expect(db.entries[0].content).toBe("Original content");
+    expect(db.entries[0].tags).toBe('["work","status:deprecated"]');
+    expect(db.entries[0].vector_ids).toBe("[]");
+    expect(db.revisions).toHaveLength(0);
+    expect(deleteByIdsMock).toHaveBeenCalledWith(preparedIds);
+  });
+
   // ── Safe ordering ───────────────────────────────────────────────────────────
 
-  it("reads vector_ids before D1 content update (safe ordering)", async () => {
+  it("inserts the new generation before changing D1 and deletes old vectors last", async () => {
     // Seed entry with known vector_ids
     seedEntry(db, { vector_ids: '["old-vec-1","old-vec-2"]' });
 
     const callOrder: string[] = [];
+    let contentAtInsert = "";
+    let vectorIdsAtInsert = "";
     const deleteByIdsMock = vi.fn().mockImplementation(async (ids: string[]) => {
       callOrder.push(`delete:${ids.join(",")}`);
       return { mutationId: "m" };
     });
     const insertMock = vi.fn().mockImplementation(async () => {
+      contentAtInsert = db.entries[0].content;
+      vectorIdsAtInsert = db.entries[0].vector_ids;
       callOrder.push("insert");
       return { mutationId: "m" };
     });
@@ -279,11 +403,148 @@ describe("POST /update", () => {
       env, ctx
     );
 
+    expect(contentAtInsert).toBe("Original content");
+    expect(vectorIdsAtInsert).toBe('["old-vec-1","old-vec-2"]');
+    expect(db.entries[0].content).toBe("Replaced content");
+    const activeIds: string[] = JSON.parse(db.entries[0].vector_ids);
+    expect(activeIds.every((id) => id.startsWith("g-"))).toBe(true);
+    expect(activeIds.every((id) => id.length <= 64)).toBe(true);
+
     // insert must happen before delete — new vectors before old ones removed
     const insertIdx = callOrder.indexOf("insert");
     const deleteIdx = callOrder.findIndex(s => s.startsWith("delete:"));
     expect(insertIdx).toBeLessThan(deleteIdx);
     expect(callOrder[deleteIdx]).toContain("old-vec-1");
     expect(callOrder[deleteIdx]).toContain("old-vec-2");
+  });
+
+  it("does not let delayed initial vectorization overwrite a newer update generation", async () => {
+    let releaseInitialInsert!: () => void;
+    const initialInsertGate = new Promise<void>((resolve) => {
+      releaseInitialInsert = resolve;
+    });
+    const insertMock = vi.fn()
+      .mockImplementationOnce(() => initialInsertGate)
+      .mockResolvedValue({ mutationId: "update" });
+    const deleteByIdsMock = vi.fn().mockResolvedValue({ mutationId: "cleanup" });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        insert: insertMock,
+        deleteByIds: deleteByIdsMock,
+      }),
+    });
+
+    const pending: Promise<unknown>[] = [];
+    const captureCtx = {
+      waitUntil(promise: Promise<unknown>) {
+        pending.push(promise);
+      },
+    } as unknown as ExecutionContext;
+    const captureResponse = await worker.fetch(
+      req("POST", "/capture", { body: { content: "Initial content" } }),
+      env,
+      captureCtx
+    );
+    const captureResult = await captureResponse.json() as { id: string };
+    await vi.waitFor(() => expect(insertMock).toHaveBeenCalledTimes(1));
+    const initialIds = (insertMock.mock.calls[0][0] as any[]).map((vector) => vector.id);
+
+    const updateResponse = await worker.fetch(
+      req("POST", "/update", {
+        body: { id: captureResult.id, content: "Updated before initial vectors completed" },
+      }),
+      env,
+      ctx
+    );
+    expect(updateResponse.status).toBe(200);
+    const committedIds = JSON.parse(db.entries[0].vector_ids) as string[];
+    expect(committedIds.every((id) => id.startsWith("g-"))).toBe(true);
+
+    releaseInitialInsert();
+    await Promise.allSettled(pending);
+
+    expect(db.entries[0].content).toBe("Updated before initial vectors completed");
+    expect(JSON.parse(db.entries[0].vector_ids)).toEqual(committedIds);
+    expect(initialIds.every((id) => id.startsWith("g-"))).toBe(true);
+    expect(deleteByIdsMock).toHaveBeenCalledWith(initialIds);
+    expect(deleteByIdsMock).not.toHaveBeenCalledWith(committedIds);
+  });
+
+  it("does not attach delayed initial vectors after an overwrite import changes content", async () => {
+    let releaseInitialInsert!: () => void;
+    const initialInsertGate = new Promise<void>((resolve) => {
+      releaseInitialInsert = resolve;
+    });
+    const insertMock = vi.fn().mockImplementation(() => initialInsertGate);
+    const deleteByIdsMock = vi.fn().mockResolvedValue({ mutationId: "cleanup" });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        insert: insertMock,
+        deleteByIds: deleteByIdsMock,
+      }),
+    });
+    const pending: Promise<unknown>[] = [];
+    const captureCtx = {
+      waitUntil(promise: Promise<unknown>) {
+        pending.push(promise);
+      },
+    } as unknown as ExecutionContext;
+
+    const captureResponse = await worker.fetch(
+      req("POST", "/capture", { body: { content: "Content before import" } }),
+      env,
+      captureCtx
+    );
+    const captureResult = await captureResponse.json() as { id: string };
+    await vi.waitFor(() => expect(insertMock).toHaveBeenCalledOnce());
+    const initialIds = (insertMock.mock.calls[0][0] as any[]).map((vector) => vector.id);
+
+    db.entries[0].content = "Replacement imported content";
+    db.entries[0].vector_ids = "[]";
+    releaseInitialInsert();
+    await Promise.allSettled(pending);
+
+    expect(db.entries[0].id).toBe(captureResult.id);
+    expect(db.entries[0].content).toBe("Replacement imported content");
+    expect(db.entries[0].vector_ids).toBe("[]");
+    expect(deleteByIdsMock).toHaveBeenCalledWith(initialIds);
+  });
+
+  it("does not attach delayed initial vectors after the memory is deprecated", async () => {
+    let releaseInitialInsert!: () => void;
+    const initialInsertGate = new Promise<void>((resolve) => {
+      releaseInitialInsert = resolve;
+    });
+    const insertMock = vi.fn().mockImplementation(() => initialInsertGate);
+    const deleteByIdsMock = vi.fn().mockResolvedValue({ mutationId: "cleanup" });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        insert: insertMock,
+        deleteByIds: deleteByIdsMock,
+      }),
+    });
+    const pending: Promise<unknown>[] = [];
+    const captureCtx = {
+      waitUntil(promise: Promise<unknown>) {
+        pending.push(promise);
+      },
+    } as unknown as ExecutionContext;
+
+    await worker.fetch(
+      req("POST", "/capture", { body: { content: "Soon deprecated" } }),
+      env,
+      captureCtx
+    );
+    await vi.waitFor(() => expect(insertMock).toHaveBeenCalledOnce());
+    const initialIds = (insertMock.mock.calls[0][0] as any[]).map((vector) => vector.id);
+    db.entries[0].tags = '["status:deprecated"]';
+    db.entries[0].vector_ids = "[]";
+
+    releaseInitialInsert();
+    await Promise.allSettled(pending);
+
+    expect(db.entries[0].tags).toBe('["status:deprecated"]');
+    expect(db.entries[0].vector_ids).toBe("[]");
+    expect(deleteByIdsMock).toHaveBeenCalledWith(initialIds);
   });
 });

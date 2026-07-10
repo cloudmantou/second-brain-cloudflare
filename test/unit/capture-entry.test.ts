@@ -93,6 +93,10 @@ describe("captureEntry()", () => {
   // ── Duplicate: blocked ──────────────────────────────────────────────────────
 
   it("returns status=blocked and does not insert when similarity >= 0.95", async () => {
+    db.entries.push({
+      id: "existing", content: "Existing duplicate", tags: "[]", source: "api",
+      created_at: Date.now(), vector_ids: '["existing"]', recall_count: 0, importance_score: 0,
+    });
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
@@ -106,10 +110,14 @@ describe("captureEntry()", () => {
     if (result.status !== "blocked") return;
     expect(result.matchId).toBe("existing");
     expect(result.score).toBeCloseTo(0.97);
-    expect(db.entries).toHaveLength(0);
+    expect(db.entries).toHaveLength(1);
   });
 
   it("does not call ctx.waitUntil when blocked (no scoring needed)", async () => {
+    db.entries.push({
+      id: "existing", content: "Existing duplicate", tags: "[]", source: "api",
+      created_at: Date.now(), vector_ids: '["existing"]', recall_count: 0, importance_score: 0,
+    });
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
@@ -125,7 +133,11 @@ describe("captureEntry()", () => {
 
   // ── Duplicate: flagged ──────────────────────────────────────────────────────
 
-  it("returns status=flagged, stores entry, and adds duplicate-candidate tag", async () => {
+  it("stores an active flagged match as a linked similarity", async () => {
+    db.entries.push({
+      id: "near", content: "Existing similar note", tags: "[]", source: "api",
+      created_at: Date.now(), vector_ids: '["near"]', recall_count: 0, importance_score: 0,
+    });
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
@@ -135,11 +147,12 @@ describe("captureEntry()", () => {
     });
     const { ctx } = makeCtx();
     const result = await captureEntry("Similar note", [], "api", env, ctx);
-    expect(result.status).toBe("flagged");
-    if (result.status !== "flagged") return;
-    expect(result.matchId).toBe("near");
-    expect(db.entries).toHaveLength(1);
-    const tags: string[] = JSON.parse(db.entries[0].tags);
+    expect(result.status).toBe("linked");
+    if (result.status !== "linked") return;
+    expect(result.linkedId).toBe("near");
+    expect(result.relation).toBe("similar");
+    expect(db.entries).toHaveLength(2);
+    const tags: string[] = JSON.parse(db.entries.find(entry => entry.id === result.id)!.tags);
     expect(tags).toContain("duplicate-candidate");
   });
 
@@ -161,7 +174,7 @@ describe("captureEntry()", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "old-entry", score: 0.72, metadata: { parentId: "old-entry" } }],
+          matches: [{ id: "old-vec-1", score: 0.72, metadata: { parentId: "old-entry" } }],
         }),
         deleteByIds: deleteByIdsMock,
       }),
@@ -214,7 +227,7 @@ describe("captureEntry()", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "canonical-entry", score: 0.72, metadata: { parentId: "canonical-entry" } }],
+          matches: [{ id: "canonical-vec-1", score: 0.72, metadata: { parentId: "canonical-entry" } }],
         }),
         deleteByIds: deleteByIdsMock,
       }),
@@ -257,7 +270,7 @@ describe("captureEntry()", () => {
       tags: "[]",
       source: "api",
       created_at: Date.now(),
-      vector_ids: "[]",
+      vector_ids: '["conflict"]',
       recall_count: 0,
       importance_score: 0,
     });
@@ -324,7 +337,7 @@ describe("captureEntry()", () => {
     expect(deleteByIdsMock).not.toHaveBeenCalled();
   });
 
-  it("replace: falls through to normal insert when target not found in DB", async () => {
+  it("replace: ignores an orphaned match when target is not found in D1", async () => {
     // Vectorize returns a match but D1 has no corresponding entry
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
@@ -336,8 +349,7 @@ describe("captureEntry()", () => {
     });
     const { ctx } = makeCtx();
     const result = await captureEntry("I switched to Cursor", [], "api", env, ctx);
-    // Falls through → stores as a new entry
-    expect(result.status).toBe("flagged");
+    expect(result.status).toBe("stored");
     expect(db.entries).toHaveLength(1);
   });
 
@@ -414,7 +426,7 @@ describe("captureEntry()", () => {
   it("keep_both: stores new entry with duplicate-candidate tag and similar relation", async () => {
     db.entries.push({
       id: "near", content: "I prefer dark mode", tags: "[]", source: "api",
-      created_at: Date.now(), vector_ids: "[]", recall_count: 0, importance_score: 0,
+      created_at: Date.now(), vector_ids: '["near"]', recall_count: 0, importance_score: 0,
     });
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
@@ -522,7 +534,7 @@ describe("captureEntry()", () => {
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
-          matches: [{ id: "canonical-conflict", score: 0.72, metadata: { parentId: "canonical-conflict" } }],
+          matches: [{ id: "canonical-vec", score: 0.72, metadata: { parentId: "canonical-conflict" } }],
         }),
       }),
       AI: {

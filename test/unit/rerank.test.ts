@@ -59,6 +59,29 @@ describe("rerankWithTimeDecay", () => {
     expect(result.score).toBeGreaterThan(0);
   });
 
+  it("recognizes an opaque short-append vector from metadata", () => {
+    const base = {
+      id: "g-11111111-1111-4111-8111-111111111111",
+      score: 0.9,
+      metadata: { parentId: "entry", created_at: NOW, tags: [], content: "Original" },
+    };
+    const append = {
+      id: "u-22222222-2222-4222-8222-222222222222",
+      score: 0.9,
+      metadata: {
+        parentId: "entry",
+        created_at: NOW,
+        tags: [],
+        content: "Short update",
+        isUpdate: true,
+      },
+    };
+
+    const result = rerankWithTimeDecay([append, base], new Map());
+    expect(result[0].id).toBe(base.id);
+    expect(result[1].score).toBeLessThan(result[0].score);
+  });
+
   it("omitting recallCounts parameter behaves identically to passing an empty Map", () => {
     const matches = [match("a", 0.9, NOW - 10 * MS_DAY)];
     const withEmpty = rerankWithTimeDecay(matches, new Map());

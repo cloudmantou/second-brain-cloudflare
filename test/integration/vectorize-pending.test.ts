@@ -93,6 +93,25 @@ describe("POST /vectorize-pending", () => {
     expect(data.processed).toBe(0);
   });
 
+  it("does not re-vectorize deprecated memories", async () => {
+    db.entries.push({
+      ...pastGraceEntry("deprecated"),
+      tags: '["work","status:deprecated"]',
+    });
+    const insertMock = vi.fn();
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({ insert: insertMock }),
+    });
+
+    const response = await worker.fetch(req("POST", "/vectorize-pending"), env, ctx);
+    const data = await response.json() as any;
+
+    expect(data.processed).toBe(0);
+    expect(data.remaining).toBe(0);
+    expect(db.entries[0].vector_ids).toBe("[]");
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
   it("counts failed and continues when storeEntry throws for one entry", async () => {
     db.entries.push(pastGraceEntry("bad"), pastGraceEntry("good"));
     let callCount = 0;

@@ -8,6 +8,7 @@ import {
   listMemoryRelations,
 } from "../../src/memory/relations";
 import { forgetMemoryGraph } from "../../src/memory/forget";
+import { prepareMemoryRevision } from "../../src/memory/revisions";
 
 describe("memory data model", () => {
   let raw: Database.Database;
@@ -131,5 +132,69 @@ describe("memory data model", () => {
       .bind("other")
       .first<{ event_type: string }>();
     expect(unroll?.event_type).toBe("UNROLL");
+  });
+
+  it("records a revision only when the guarded vector generation becomes active", async () => {
+    const db = new SqliteD1Database(raw) as unknown as D1Database;
+    await db.exec(`
+      CREATE TABLE entries (
+        id TEXT PRIMARY KEY,
+        content TEXT NOT NULL,
+        tags TEXT NOT NULL,
+        source TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        vector_ids TEXT NOT NULL
+      )
+    `);
+    await ensureMemoryDataModel(db);
+    await db.prepare(`INSERT INTO entries VALUES (?, ?, ?, ?, ?, ?)`).bind(
+      "memory-1",
+      "Original",
+      "[]",
+      "api",
+      1,
+      '["old-vector"]'
+    ).run();
+
+    const committedRevision = prepareMemoryRevision(db, {
+      memoryId: "memory-1",
+      eventType: "UPDATE",
+      oldContent: "Original",
+      newContent: "Committed",
+      actor: "test",
+    }, {
+      activeVectorIdsJson: '["new-vector"]',
+    });
+    const committed = await db.batch([
+      db.prepare(
+        `UPDATE entries SET content = ?, vector_ids = ?
+         WHERE id = ? AND content = ? AND vector_ids = ?`
+      ).bind("Committed", '["new-vector"]', "memory-1", "Original", '["old-vector"]'),
+      committedRevision.statement,
+    ]);
+    expect(committed.map(result => result.meta.changes)).toEqual([1, 1]);
+
+    const staleRevision = prepareMemoryRevision(db, {
+      memoryId: "memory-1",
+      eventType: "UPDATE",
+      oldContent: "Original",
+      newContent: "Stale",
+      actor: "test",
+    }, {
+      activeVectorIdsJson: '["stale-vector"]',
+    });
+    const stale = await db.batch([
+      db.prepare(
+        `UPDATE entries SET content = ?, vector_ids = ?
+         WHERE id = ? AND content = ? AND vector_ids = ?`
+      ).bind("Stale", '["stale-vector"]', "memory-1", "Original", '["old-vector"]'),
+      staleRevision.statement,
+    ]);
+    expect(stale.map(result => result.meta.changes)).toEqual([0, 0]);
+
+    expect(raw.prepare(`SELECT content, vector_ids FROM entries WHERE id = ?`)
+      .get("memory-1")).toEqual({ content: "Committed", vector_ids: '["new-vector"]' });
+    expect(raw.prepare(`SELECT COUNT(*) AS count FROM sb_memory_revisions`)
+      .get()).toEqual({ count: 1 });
   });
 });

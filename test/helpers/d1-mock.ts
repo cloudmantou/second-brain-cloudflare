@@ -29,6 +29,15 @@ export class D1Mock {
             actor,
             created_at,
           ] = args;
+          if (s.includes("WHERE EXISTS")) {
+            const guardMemoryId = args[10];
+            const activeVectorIdsJson = args[11];
+            const active = db.entries.some(
+              (entry: any) =>
+                entry.id === guardMemoryId && entry.vector_ids === activeVectorIdsJson
+            );
+            if (!active) return { meta: { changes: 0 } };
+          }
           db.revisions.push({
             id,
             memory_id,
@@ -72,6 +81,18 @@ export class D1Mock {
           return { meta: { changes: 1 } };
         }
         if (s.startsWith("UPDATE entries SET content = ?, vector_ids")) {
+          if (s.includes("AND content = ? AND tags = ? AND vector_ids = ?")) {
+            const [content, vector_ids, id, expected_content, expected_tags, expected_vector_ids] = args;
+            const row = db.entries.find(
+              (e: any) =>
+                e.id === id &&
+                e.content === expected_content &&
+                e.tags === expected_tags &&
+                e.vector_ids === expected_vector_ids
+            );
+            if (row) { row.content = content; row.vector_ids = vector_ids; }
+            return { meta: { changes: row ? 1 : 0 } };
+          }
           const [content, vector_ids, id] = args;
           const row = db.entries.find((e: any) => e.id === id);
           if (row) { row.content = content; row.vector_ids = vector_ids; }
@@ -83,10 +104,31 @@ export class D1Mock {
           if (row) { row.tags = tags; row.vector_ids = vector_ids; }
           return { meta: { changes: row ? 1 : 0 } };
         }
+        if (s.startsWith("UPDATE entries SET vector_ids = ? WHERE id = ? AND vector_ids = ? AND content = ?")) {
+          const [vector_ids, id, expected_vector_ids, expected_content] = args;
+          const row = db.entries.find(
+            (e: any) =>
+              e.id === id &&
+              e.vector_ids === expected_vector_ids &&
+              e.content === expected_content &&
+              !String(e.tags ?? "[]").includes('"status:deprecated"')
+          );
+          if (row) row.vector_ids = vector_ids;
+          return { meta: { changes: row ? 1 : 0 } };
+        }
         if (s.startsWith("UPDATE entries SET vector_ids")) {
           const [vector_ids, id] = args;
           const row = db.entries.find((e: any) => e.id === id);
           if (row) row.vector_ids = vector_ids;
+          return { meta: { changes: row ? 1 : 0 } };
+        }
+        if (s.startsWith("UPDATE entries SET tags = ?, importance_score = ?")) {
+          const [tags, importance_score, id] = args;
+          const row = db.entries.find((e: any) => e.id === id);
+          if (row) {
+            row.tags = tags;
+            row.importance_score = importance_score;
+          }
           return { meta: { changes: row ? 1 : 0 } };
         }
         if (s.startsWith("UPDATE entries SET tags = ? WHERE id")) {
@@ -111,6 +153,32 @@ export class D1Mock {
             row.tags = tags;
             row.source = source;
             row.created_at = created_at;
+            row.vector_ids = vector_ids;
+          }
+          return { meta: { changes: row ? 1 : 0 } };
+        }
+        if (s.startsWith("UPDATE entries SET content = ?, tags = ?, vector_ids = ?")) {
+          if (s.includes("AND content = ? AND tags = ? AND vector_ids = ?")) {
+            const [content, tags, vector_ids, id, expected_content, expected_tags, expected_vector_ids] = args;
+            const row = db.entries.find(
+              (e: any) =>
+                e.id === id &&
+                e.content === expected_content &&
+                e.tags === expected_tags &&
+                e.vector_ids === expected_vector_ids
+            );
+            if (row) {
+              row.content = content;
+              row.tags = tags;
+              row.vector_ids = vector_ids;
+            }
+            return { meta: { changes: row ? 1 : 0 } };
+          }
+          const [content, tags, vector_ids, id] = args;
+          const row = db.entries.find((e: any) => e.id === id);
+          if (row) {
+            row.content = content;
+            row.tags = tags;
             row.vector_ids = vector_ids;
           }
           return { meta: { changes: row ? 1 : 0 } };
@@ -193,14 +261,22 @@ export class D1Mock {
             : null;
           const cutoff = args.length > 0 ? Number(args[0]) : undefined;
           const unvectorized = cutoff !== undefined
-            ? db.entries.filter((e: any) => e.vector_ids === '[]' && e.created_at < cutoff).length
+            ? db.entries.filter((e: any) =>
+                e.vector_ids === '[]' &&
+                e.created_at < cutoff &&
+                (!s.includes("tags NOT LIKE") || !String(e.tags ?? "[]").includes('"status:deprecated"'))
+              ).length
             : 0;
           const unclassified = db.entries.filter((e: any) => !String(e.tags).includes('"status:') && !String(e.tags).includes('"kind:')).length;
           return { count, avg_importance, unvectorized, unclassified };
         }
         if (s.includes("COUNT(*) as count") && s.includes("vector_ids = '[]'") && s.includes("created_at <")) {
           const cutoff = Number(args[0]);
-          const count = db.entries.filter((e: any) => e.vector_ids === '[]' && e.created_at < cutoff).length;
+          const count = db.entries.filter((e: any) =>
+            e.vector_ids === '[]' &&
+            e.created_at < cutoff &&
+            (!s.includes("tags NOT LIKE") || !String(e.tags ?? "[]").includes('"status:deprecated"'))
+          ).length;
           return { count };
         }
         if (s.includes("COUNT(*) as count") && s.includes(`tags NOT LIKE '%"status:%'`) && s.includes(`tags NOT LIKE '%"kind:%'`)) {
@@ -271,11 +347,15 @@ export class D1Mock {
             .map((relation: any) => ({ to_memory_id: relation.to_memory_id }));
           return { results };
         }
-        if (s.includes("SELECT id, vector_ids FROM entries") && s.includes("WHERE id IN")) {
+        if (s.includes("SELECT id, vector_ids") && s.includes("FROM entries WHERE id IN")) {
           const ids = new Set(args.map(String));
           const results = db.entries
             .filter((entry: any) => ids.has(String(entry.id)))
-            .map((entry: any) => ({ id: entry.id, vector_ids: entry.vector_ids ?? "[]" }));
+            .map((entry: any) => ({
+              id: entry.id,
+              vector_ids: entry.vector_ids ?? "[]",
+              tags: entry.tags ?? "[]",
+            }));
           return { results };
         }
         if (
@@ -322,6 +402,11 @@ export class D1Mock {
           if (s.includes("vector_ids = '[]'")) {
             const cutoff = Number(args[0]);
             rows = rows.filter((e: any) => e.vector_ids === "[]" && e.created_at < cutoff);
+            if (s.includes("tags NOT LIKE")) {
+              rows = rows.filter(
+                (e: any) => !String(e.tags ?? "[]").includes('"status:deprecated"')
+              );
+            }
           } else if (s.includes("created_at = ? AND id < ?") && args.length >= 4) {
             const cAt = Number(args[0]);
             const cId = String(args[2]);
@@ -335,21 +420,35 @@ export class D1Mock {
         if (
           s === "SELECT id FROM entries WHERE tags LIKE ?" ||
           s === "SELECT id, vector_ids FROM entries WHERE tags LIKE ?" ||
-          s === "SELECT id, vector_ids, content, tags, source, created_at FROM entries WHERE tags LIKE ?"
+          s.startsWith("SELECT id, vector_ids, content, tags, source, created_at FROM entries WHERE tags LIKE ?")
         ) {
           const pattern = String(args[0]);
           const tag = pattern.replace(/%"/g, "").replace(/"%/g, "");
           const results = db.entries
             .filter((e: any) => (JSON.parse(e.tags ?? "[]") as string[]).includes(tag))
+            .filter((e: any) =>
+              !s.includes("tags NOT LIKE") ||
+              (
+                !String(e.tags ?? "[]").includes('"status:deprecated"') &&
+                !String(e.tags ?? "[]").includes('"auto-pattern"')
+              )
+            )
             .map((e: any) => ({ id: e.id, vector_ids: e.vector_ids ?? "[]", content: e.content, tags: e.tags, source: e.source, created_at: e.created_at }));
           return { results };
         }
-        if (s.includes("WHERE content LIKE") && s.includes("ORDER BY created_at DESC LIMIT")) {
+        if (s.includes("content LIKE") && s.includes("ORDER BY created_at DESC LIMIT")) {
           // Keyword (hybrid recall) query: content LIKE ? OR content LIKE ? ... LIMIT ?
           const limit = Number(args[args.length - 1]);
           const patterns = args.slice(0, -1).map((a: any) => String(a).replace(/^%/, "").replace(/%$/, "").toLowerCase());
           const rows = [...db.entries]
             .filter((e: any) => patterns.some((p: string) => String(e.content).toLowerCase().includes(p)))
+            .filter((e: any) =>
+              !s.includes("tags NOT LIKE") ||
+              (
+                !String(e.tags ?? "[]").includes('"status:deprecated"') &&
+                !String(e.tags ?? "[]").includes('"auto-pattern"')
+              )
+            )
             .sort((a: any, b: any) => b.created_at - a.created_at)
             .slice(0, limit)
             .map((e: any) => ({ id: e.id, content: e.content, tags: e.tags, source: e.source, created_at: e.created_at }));

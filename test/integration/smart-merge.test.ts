@@ -73,6 +73,14 @@ describe("POST /capture — similarity decision guardrails", () => {
       }
       throw new Error("LLM should not be called");
     });
+    db.entries.push({
+      id: "duplicate",
+      content: "Existing duplicate",
+      tags: "[]",
+      source: "api",
+      created_at: Date.now(),
+      vector_ids: '["duplicate"]',
+    });
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
         query: vi.fn().mockResolvedValue({
@@ -90,7 +98,7 @@ describe("POST /capture — similarity decision guardrails", () => {
     const body = (await response.json()) as any;
 
     expect(body).toMatchObject({ ok: false, duplicate: true });
-    expect(db.entries).toHaveLength(0);
+    expect(db.entries).toHaveLength(1);
     expect(run).toHaveBeenCalledOnce();
   });
 

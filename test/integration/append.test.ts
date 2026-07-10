@@ -68,7 +68,7 @@ describe("POST /append", () => {
 
   // ── Short append: append-only path (≤ CHUNK_MAX_CHARS) ──────────────────────
 
-  it("short append: uses -update- vector ID style, does not delete old vectors", async () => {
+  it("short append: uses a unique update generation and does not delete old vectors", async () => {
     const deleteByIdsMock = vi.fn().mockResolvedValue({ mutationId: "m" });
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({ deleteByIds: deleteByIdsMock }),
@@ -92,7 +92,8 @@ describe("POST /append", () => {
     const vectorIds: string[] = JSON.parse(db.entries[0].vector_ids);
     expect(vectorIds).toHaveLength(2);
     expect(vectorIds[0]).toBe("entry-1");
-    expect(vectorIds[1]).toMatch(/^entry-1-update-\d+$/);
+    expect(vectorIds[1]).toMatch(/^u-[0-9a-f-]{36}$/);
+    expect(vectorIds[1].length).toBeLessThanOrEqual(64);
     // Old vectors should NOT be deleted on the short path
     expect(deleteByIdsMock).not.toHaveBeenCalled();
   });
@@ -130,6 +131,8 @@ describe("POST /append", () => {
     // vector_ids updated to chunk-style IDs (not -update- style)
     const vectorIds: string[] = JSON.parse(db.entries[0].vector_ids);
     expect(vectorIds.every((id: string) => !id.includes("-update-"))).toBe(true);
+    expect(vectorIds.every((id: string) => id.startsWith("g-"))).toBe(true);
+    expect(vectorIds.every((id: string) => id.length <= 64)).toBe(true);
 
     // Old vectors deleted
     expect(deleteByIdsMock).toHaveBeenCalledWith(["entry-1", "entry-1-update-111"]);
@@ -137,9 +140,14 @@ describe("POST /append", () => {
 
   it("oversized append: new vectors inserted before old ones are deleted (safe ordering)", async () => {
     const callOrder: string[] = [];
+    let contentAtInsert = "";
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
-        insert: vi.fn().mockImplementation(async () => { callOrder.push("insert"); return { mutationId: "m" }; }),
+        insert: vi.fn().mockImplementation(async () => {
+          contentAtInsert = db.entries[0].content;
+          callOrder.push("insert");
+          return { mutationId: "m" };
+        }),
         deleteByIds: vi.fn().mockImplementation(async () => { callOrder.push("delete"); return { mutationId: "m" }; }),
       }),
     });
@@ -158,13 +166,18 @@ describe("POST /append", () => {
       ctx
     );
 
+    expect(contentAtInsert).toBe(LONG_CONTENT);
+    expect(db.entries[0].content).toContain("More info");
     expect(callOrder.indexOf("insert")).toBeLessThan(callOrder.indexOf("delete"));
   });
 
-  it("oversized append: Vectorize re-embed failure is non-fatal — D1 still updated", async () => {
+  it("oversized append: preserves old content and vectors when re-embed fails", async () => {
+    const insertMock = vi.fn().mockRejectedValue(new Error("Vectorize down"));
+    const deleteByIdsMock = vi.fn().mockResolvedValue({ mutationId: "m" });
     env = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
-        insert: vi.fn().mockRejectedValue(new Error("Vectorize down")),
+        insert: insertMock,
+        deleteByIds: deleteByIdsMock,
       }),
     });
     db.entries.push({
@@ -182,11 +195,16 @@ describe("POST /append", () => {
       ctx
     );
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     const data = await res.json() as any;
-    expect(data.ok).toBe(true);
-    // D1 content still updated even if Vectorize failed
-    expect(db.entries[0].content).toContain("More info");
+    expect(data.ok).toBe(false);
+    expect(data.error).not.toContain("Vectorize down");
+    expect(db.entries[0].content).toBe(LONG_CONTENT);
+    expect(db.entries[0].vector_ids).toBe('["entry-1"]');
+    expect(db.revisions).toHaveLength(0);
+    const preparedIds = (insertMock.mock.calls[0][0] as any[]).map((vector) => vector.id);
+    expect(deleteByIdsMock).toHaveBeenCalledWith(preparedIds);
+    expect(deleteByIdsMock).not.toHaveBeenCalledWith(["entry-1"]);
   });
 
   it("oversized append: old vector deletion failure is non-fatal", async () => {
@@ -247,9 +265,12 @@ describe("POST /append", () => {
       vector_ids: "[]",
     });
 
+    const insertMock = vi.fn().mockRejectedValue(new Error("Vectorize unavailable"));
+    const deleteByIdsMock = vi.fn().mockResolvedValue({ mutationId: "m" });
     const failEnv = makeTestEnv(db, {
       VECTORIZE: makeVectorizeMock({
-        insert: vi.fn().mockRejectedValue(new Error("Vectorize unavailable")),
+        insert: insertMock,
+        deleteByIds: deleteByIdsMock,
       }),
     });
 
@@ -261,5 +282,106 @@ describe("POST /append", () => {
     const data = await res.json() as any;
     expect(data.ok).toBe(false);
     expect(data.error).not.toContain("Vectorize unavailable");
+    expect(db.entries[0].content).toBe("Short content");
+    expect(db.entries[0].vector_ids).toBe("[]");
+    expect(db.revisions).toHaveLength(0);
+    const attemptedId = (insertMock.mock.calls[0][0] as any[])[0].id;
+    expect(deleteByIdsMock).toHaveBeenCalledWith([attemptedId]);
+  });
+
+  it("short append rejects a stale write without overwriting concurrent content", async () => {
+    db.entries.push({
+      id: "entry-1",
+      content: "Original content",
+      tags: "[]",
+      source: "api",
+      created_at: Date.now(),
+      vector_ids: '["old-vector"]',
+    });
+    const insertMock = vi.fn().mockImplementation(async () => {
+      db.entries[0].content = "Concurrent content";
+      db.entries[0].vector_ids = '["concurrent-vector"]';
+      return { mutationId: "insert" };
+    });
+    const deleteByIdsMock = vi.fn().mockResolvedValue({ mutationId: "cleanup" });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({
+        insert: insertMock,
+        deleteByIds: deleteByIdsMock,
+      }),
+    });
+
+    const response = await worker.fetch(
+      req("POST", "/append", { body: { id: "entry-1", addition: "Stale addition" } }),
+      env,
+      ctx
+    );
+
+    const attemptedId = (insertMock.mock.calls[0][0] as any[])[0].id;
+    expect(response.status).toBe(500);
+    expect(db.entries[0].content).toBe("Concurrent content");
+    expect(db.entries[0].vector_ids).toBe('["concurrent-vector"]');
+    expect(db.revisions).toHaveLength(0);
+    expect(deleteByIdsMock).toHaveBeenCalledWith([attemptedId]);
+    expect(deleteByIdsMock).not.toHaveBeenCalledWith(["concurrent-vector"]);
+  });
+
+  it("does not append to a deprecated memory", async () => {
+    db.entries.push({
+      id: "entry-1",
+      content: "Deprecated content",
+      tags: '["status:deprecated"]',
+      source: "api",
+      created_at: Date.now(),
+      vector_ids: "[]",
+    });
+    const insertMock = vi.fn();
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({ insert: insertMock }),
+    });
+
+    const response = await worker.fetch(
+      req("POST", "/append", { body: { id: "entry-1", addition: "Must not reactivate" } }),
+      env,
+      ctx
+    );
+
+    expect(response.status).toBe(500);
+    expect(db.entries[0].content).toBe("Deprecated content");
+    expect(db.entries[0].vector_ids).toBe("[]");
+    expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it("short append loses the CAS when the memory is deprecated during embedding", async () => {
+    db.entries.push({
+      id: "entry-1",
+      content: "Active content",
+      tags: "[]",
+      source: "api",
+      created_at: Date.now(),
+      vector_ids: "[]",
+    });
+    const insertMock = vi.fn().mockImplementation(async () => {
+      db.entries[0].tags = '["status:deprecated"]';
+      db.entries[0].vector_ids = "[]";
+      return { mutationId: "insert" };
+    });
+    const deleteByIdsMock = vi.fn().mockResolvedValue({ mutationId: "cleanup" });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({ insert: insertMock, deleteByIds: deleteByIdsMock }),
+    });
+
+    const response = await worker.fetch(
+      req("POST", "/append", { body: { id: "entry-1", addition: "Concurrent addition" } }),
+      env,
+      ctx
+    );
+
+    const attemptedId = (insertMock.mock.calls[0][0] as any[])[0].id;
+    expect(response.status).toBe(500);
+    expect(db.entries[0].content).toBe("Active content");
+    expect(db.entries[0].tags).toBe('["status:deprecated"]');
+    expect(db.entries[0].vector_ids).toBe("[]");
+    expect(deleteByIdsMock).toHaveBeenCalledWith([attemptedId]);
   });
 });
