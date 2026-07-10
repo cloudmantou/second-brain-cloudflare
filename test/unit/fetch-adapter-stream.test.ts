@@ -7,6 +7,8 @@ describe("isBenignStreamClose", () => {
       code: "ERR_STREAM_PREMATURE_CLOSE",
     });
     expect(isBenignStreamClose(err)).toBe(true);
+    expect(isBenignStreamClose(new Error("Premature close"))).toBe(true);
+    expect(isBenignStreamClose(new Error("socket hang up"))).toBe(true);
   });
 
   it("treats ECONNRESET / EPIPE / AbortError as benign", () => {
@@ -24,5 +26,12 @@ describe("isBenignStreamClose", () => {
   it("does not treat arbitrary errors as benign", () => {
     expect(isBenignStreamClose(new Error("LLM failed"))).toBe(false);
     expect(isBenignStreamClose(null)).toBe(false);
+  });
+
+  it("does not hide unrelated failures that contain close-like words", () => {
+    expect(isBenignStreamClose(new Error("database connection destroyed"))).toBe(
+      false
+    );
+    expect(isBenignStreamClose(new Error("transaction aborted"))).toBe(false);
   });
 });

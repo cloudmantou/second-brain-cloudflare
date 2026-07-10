@@ -41,8 +41,8 @@ export function isBenignStreamClose(err: unknown): boolean {
     return true;
   }
   if (e.name === "AbortError") return true;
-  const msg = String(e.message || "");
-  return /premature close|aborted|socket hang up|destroyed/i.test(msg);
+  const message = String(e.message || "").trim().toLowerCase();
+  return message === "premature close" || message === "socket hang up";
 }
 
 function buildRequestUrl(req: FastifyRequest): string {
@@ -68,7 +68,6 @@ function buildRequestUrl(req: FastifyRequest): string {
 
 function clientGone(req: FastifyRequest, reply: FastifyReply): boolean {
   return (
-    req.raw.destroyed ||
     req.raw.aborted === true ||
     reply.raw.destroyed ||
     reply.raw.writableEnded ||
@@ -149,6 +148,12 @@ async function pipeSseToResponse(
     if (!isBenignStreamClose(err)) console.error("[sse] source error:", err);
   });
 
+  const abortUpstream = () => {
+    if (!nodeStream.destroyed) nodeStream.destroy();
+  };
+  req.raw.once("aborted", abortUpstream);
+  reply.raw.once("close", abortUpstream);
+
   try {
     for await (const chunk of nodeStream) {
       if (clientGone(req, reply)) break;
@@ -170,6 +175,8 @@ async function pipeSseToResponse(
       console.error("[sse] pump failed:", error);
     }
   } finally {
+    req.raw.off("aborted", abortUpstream);
+    reply.raw.off("close", abortUpstream);
     if (!nodeStream.destroyed) {
       try {
         nodeStream.destroy();
