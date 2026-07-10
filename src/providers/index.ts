@@ -5,6 +5,7 @@
 
 import type { LLMProvider } from "./llm";
 import type { EmbeddingProvider } from "./embedding";
+import { LocalHashEmbedding } from "./local-embedding";
 import { OpenAICompatibleEmbedding, OpenAICompatibleLLM } from "./openai-compatible";
 import {
   DEFAULT_WORKERS_EMBEDDING_MODEL,
@@ -16,6 +17,7 @@ import {
 export type { ChatMessage, ChatOptions, LLMProvider } from "./llm";
 export type { EmbeddingProvider } from "./embedding";
 export { OpenAICompatibleLLM, OpenAICompatibleEmbedding } from "./openai-compatible";
+export { LocalHashEmbedding } from "./local-embedding";
 export {
   WorkersAILLM,
   WorkersAIEmbedding,
@@ -26,12 +28,17 @@ export {
 /** Minimal env surface needed to construct providers (avoids circular Env import). */
 export interface ProviderEnv {
   AI?: Ai;
+  /** When "1"/"true", allow local hash embeddings if no embed API / Workers AI. */
+  SELFHOST?: string;
   LLM_BASE_URL?: string;
   LLM_API_KEY?: string;
   LLM_MODEL?: string;
   EMBEDDING_BASE_URL?: string;
   EMBEDDING_API_KEY?: string;
   EMBEDDING_MODEL?: string;
+  /** "local" forces LocalHashEmbedding; default auto on self-host. */
+  EMBEDDING_PROVIDER?: string;
+  EMBEDDING_DIM?: string;
 }
 
 export function createLLM(env: ProviderEnv): LLMProvider {
@@ -58,13 +65,25 @@ export function createEmbedding(env: ProviderEnv): EmbeddingProvider {
       model: env.EMBEDDING_MODEL || "text-embedding-3-small",
     });
   }
+
+  const preferLocal =
+    env.EMBEDDING_PROVIDER === "local" ||
+    env.SELFHOST === "1" ||
+    env.SELFHOST === "true";
+
+  if (preferLocal) {
+    const dim = parseInt(env.EMBEDDING_DIM || "384", 10) || 384;
+    return new LocalHashEmbedding(dim);
+  }
+
   if (env.AI) {
     return new WorkersAIEmbedding(
       env.AI,
       env.EMBEDDING_MODEL || DEFAULT_WORKERS_EMBEDDING_MODEL
     );
   }
+
   throw new Error(
-    "No embedding configured: set EMBEDDING_BASE_URL + EMBEDDING_API_KEY, or bind Workers AI"
+    "No embedding configured: set EMBEDDING_BASE_URL + EMBEDDING_API_KEY, EMBEDDING_PROVIDER=local, or bind Workers AI"
   );
 }

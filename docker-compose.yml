@@ -1,0 +1,14 @@
+services:
+  second-brain:
+    build: .
+    ports:
+      - "${PORT:-8787}:8787"
+    env_file:
+      - .env
+    environment:
+      DATABASE_PATH: /app/data/memory.db
+      HOST: 0.0.0.0
+      PORT: "8787"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

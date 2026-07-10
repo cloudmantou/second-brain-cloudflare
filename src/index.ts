@@ -12,11 +12,16 @@ import { createEmbedding, createLLM } from "./providers";
 export interface Env {
   DB: D1Database;
   VECTORIZE: VectorizeIndex;
-  /** Workers AI binding — used when external LLM/embedding env vars are not set. */
+  /**
+   * Workers AI binding — used when external LLM/embedding env vars are not set.
+   * Self-host provides a stub when only OpenAI-compatible APIs are configured.
+   */
   AI: Ai;
   AUTH_TOKEN: string;
   OAUTH_KV: KVNamespace;
   VECTORIZE_GRACE_MS?: string;
+  /** Set on Node self-host (`1`) to enable local hash embeddings fallback. */
+  SELFHOST?: string;
   /** OpenAI-compatible chat API (DeepSeek / MiniMax / MiMo / OpenAI). */
   LLM_BASE_URL?: string;
   LLM_API_KEY?: string;
@@ -25,6 +30,8 @@ export interface Env {
   EMBEDDING_BASE_URL?: string;
   EMBEDDING_API_KEY?: string;
   EMBEDDING_MODEL?: string;
+  EMBEDDING_PROVIDER?: string;
+  EMBEDDING_DIM?: string;
 }
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────

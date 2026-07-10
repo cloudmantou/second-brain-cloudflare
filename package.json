@@ -5,6 +5,9 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "server": "node --require ./src/selfhost/register-cf-shim.cjs --import tsx src/server.ts",
+    "start": "node --require ./src/selfhost/register-cf-shim.cjs --import tsx src/server.ts",
+    "selfhost": "node --require ./src/selfhost/register-cf-shim.cjs --import tsx src/server.ts",
     "db:create": "wrangler d1 create second-brain-db",
     "db:migrate": "wrangler d1 execute second-brain-db --file=db/schema.sql",
     "db:migrate:remote": "wrangler d1 execute second-brain-db --remote --file=db/schema.sql",
@@ -12,18 +15,24 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:ai": "tsx scripts/test-ai.ts"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^0.7.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "agents": "^0.12.4",
+    "better-sqlite3": "^12.11.1",
+    "dotenv": "^17.4.2",
+    "fastify": "^5.10.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241022.0",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.9.1",
     "@vitest/coverage-v8": "^4.1.7",
+    "tsx": "^4.23.0",
     "typescript": "^5.5.0",
     "vitest": "^4.1.7",
     "wrangler": "^4.101.0"
