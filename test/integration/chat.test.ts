@@ -62,4 +62,23 @@ describe("POST /chat", () => {
     expect(userMsg).toContain(query);
     expect(userMsg).toContain(memories);
   });
+
+  it("uses a project-progress prompt for recent activity summaries", async () => {
+    await worker.fetch(req("POST", "/chat", {
+      body: {
+        query: "最近在忙什么",
+        memories: "[2026/7/10 · codex · work]\n修复了 MCP OAuth",
+        mode: "recent_activity",
+      },
+    }), env, ctx);
+
+    const aiMock = env.AI.run as ReturnType<typeof import("vitest").vi.fn>;
+    const [, callArgs] = aiMock.mock.calls[0] as [string, { messages: { role: string; content: string }[] }];
+    const system = callArgs.messages.find((message) => message.role === "system")?.content ?? "";
+    expect(system).toContain("project");
+    expect(system).toContain("progress");
+    expect(system).toContain("next steps");
+    expect(system).toContain("same language");
+    expect(system).toContain("untrusted data");
+  });
 });

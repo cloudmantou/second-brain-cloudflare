@@ -93,7 +93,7 @@ function buildLLM(env: ProviderEnv): LLMProvider {
       defaultExtraBody: extra,
     });
   }
-  if (env.AI) {
+  if (env.AI && env.SELFHOST !== "1") {
     return new WorkersAILLM(env.AI, env.LLM_MODEL || DEFAULT_WORKERS_LLM_MODEL);
   }
   throw new Error(
@@ -132,7 +132,7 @@ function buildEmbedding(env: ProviderEnv): EmbeddingProvider {
     return new LocalHashEmbedding(dim);
   }
 
-  if (env.AI) {
+  if (env.AI && env.SELFHOST !== "1") {
     return new WorkersAIEmbedding(
       env.AI,
       env.EMBEDDING_MODEL || DEFAULT_WORKERS_EMBEDDING_MODEL

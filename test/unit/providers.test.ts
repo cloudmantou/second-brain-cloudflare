@@ -34,6 +34,13 @@ describe("createLLM / createEmbedding", () => {
     await expect(createLLM({})).rejects.toThrow(/No LLM configured/);
   });
 
+  it("does not fall back to Workers AI in self-host mode", async () => {
+    await expect(createLLM({
+      SELFHOST: "1",
+      AI: { run: vi.fn() } as unknown as Ai,
+    })).rejects.toThrow(/No LLM configured/);
+  });
+
   it("uses OpenAI-compatible embedding when EMBEDDING_* is set", async () => {
     const emb = await createEmbedding({
       EMBEDDING_BASE_URL: "https://api.openai.com/v1",
@@ -57,7 +64,10 @@ describe("createLLM / createEmbedding", () => {
   });
 
   it("rejects bare self-host without real embedding or ALLOW_DEV_EMBEDDING", async () => {
-    await expect(createEmbedding({ SELFHOST: "1" })).rejects.toThrow(/not configured/i);
+    await expect(createEmbedding({
+      SELFHOST: "1",
+      AI: { run: vi.fn() } as unknown as Ai,
+    })).rejects.toThrow(/not configured/i);
   });
 });
 
@@ -94,16 +104,20 @@ describe("OpenAICompatibleLLM", () => {
     expect(body.messages[0].content).toBe("hi");
   });
 
-  it("chatAsCfSse emits Workers-compatible response deltas", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          choices: [{ message: { content: "stream me" } }],
-        }),
-      })
-    );
+  it("chatAsCfSse streams OpenAI-compatible deltas as Workers-compatible events", async () => {
+    const encoder = new TextEncoder();
+    const upstream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"stream"}}]}\n\nda'));
+        controller.enqueue(encoder.encode('ta: {"choices":[{"delta":{"content":" me"}}]}\n\ndata: [DONE]\n\n'));
+        controller.close();
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(upstream, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
 
     const llm = new OpenAICompatibleLLM({
       baseURL: "https://api.example.com/v1",
@@ -112,8 +126,12 @@ describe("OpenAICompatibleLLM", () => {
     });
     const stream = await llm.chatAsCfSse([{ role: "user", content: "x" }]);
     const raw = await new Response(stream).text();
-    expect(raw).toContain('"response":"stream me"');
+    expect(raw).toContain('"response":"stream"');
+    expect(raw).toContain('"response":" me"');
     expect(raw).toContain("[DONE]");
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.stream).toBe(true);
   });
 });
 

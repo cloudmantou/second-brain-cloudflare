@@ -205,6 +205,24 @@ PUBLIC_URL=https://YOUR-DOMAIN
 Aliases (first non-empty wins): `PUBLIC_URL` | `PUBLIC_BASE_URL` | `SITE_URL`.
 Inspect runtime config: `GET /config` (public, no secrets).
 
+Configure the self-host model runtime with your own OpenAI-compatible providers:
+
+```bash
+LLM_BASE_URL=https://YOUR-LLM-GATEWAY/v1
+LLM_API_KEY=...
+LLM_MODEL=...
+
+EMBEDDING_BASE_URL=https://YOUR-EMBEDDING-GATEWAY/v1
+EMBEDDING_API_KEY=...
+EMBEDDING_MODEL=...
+EMBEDDING_DIM=384
+```
+
+When `SELFHOST=1`, chat and production embeddings do not fall back to Workers AI.
+Missing third-party configuration fails explicitly. The web UI streams chat tokens
+from the configured LLM, while recent-activity questions such as “我在忙什么？”
+use the latest 30 days of chronological memories instead of a generic semantic Top-5.
+
 **Behind Nginx:** proxy **all** of these paths to the Node process (do not reserve `/.well-known` only for ACME):
 
 ```nginx
@@ -216,6 +234,14 @@ location ^~ /.well-known/oauth- {
 }
 location /oauth/ { proxy_pass http://127.0.0.1:8787; /* same headers */ }
 location /mcp { proxy_pass http://127.0.0.1:8787; /* same headers */ }
+location /chat {
+  proxy_pass http://127.0.0.1:8787;
+  proxy_set_header Host $host;
+  proxy_set_header X-Forwarded-Proto $scheme;
+  proxy_buffering off;
+  proxy_cache off;
+  proxy_read_timeout 300s;
+}
 ```
 
 The following clients support this flow:
@@ -281,6 +307,10 @@ Second Brain is built with:
 * Cloudflare KV
 * Model Context Protocol
 * TypeScript
+
+The self-host runtime additionally uses Node.js, Fastify, SQLite, and configurable
+OpenAI-compatible chat and embedding providers. Cloudflare resources remain available
+for Worker deployments but are not required for self-host model inference.
 
 It runs within Cloudflare's free tier at personal scale.
 

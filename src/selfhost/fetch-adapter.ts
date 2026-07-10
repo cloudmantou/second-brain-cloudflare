@@ -6,6 +6,7 @@
  */
 
 import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Env } from "../index";
 import worker from "../index";
@@ -89,8 +90,10 @@ export async function handleWithWorker(
   const response = await worker.fetch(request, env, ctx);
 
   reply.status(response.status);
+  const responseHeaders: Array<[string, string]> = [];
   response.headers.forEach((value, key) => {
     if (HOP_BY_HOP.has(key.toLowerCase())) return;
+    responseHeaders.push([key, value]);
     reply.header(key, value);
   });
 
@@ -103,10 +106,29 @@ export async function handleWithWorker(
 
   // Only stream true SSE; buffer everything else so JSON APIs never return empty bodies.
   if (contentType.includes("text/event-stream")) {
+    // Fastify considers an async handler complete as soon as it returns. Sending a
+    // Web/Node stream and returning immediately can therefore close the self-host
+    // response before the first delayed model token arrives. Hijack the raw response
+    // and await the pipeline so its lifetime matches the upstream SSE stream.
+    reply.hijack();
+    reply.raw.statusCode = response.status;
+    for (const [key, value] of responseHeaders) {
+      reply.raw.setHeader(key, value);
+    }
+    reply.raw.setHeader("cache-control", "no-cache, no-transform");
+    reply.raw.setHeader("x-accel-buffering", "no");
+    reply.raw.flushHeaders();
+
     const nodeStream = Readable.fromWeb(
       response.body as unknown as import("stream/web").ReadableStream
     );
-    reply.send(nodeStream);
+    try {
+      await pipeline(nodeStream, reply.raw);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ERR_STREAM_PREMATURE_CLOSE") {
+        throw error;
+      }
+    }
     return;
   }
 

@@ -1,6 +1,41 @@
 import { describe, it, expect } from "vitest";
 
-const { parseRecallResult, escHtml, escAttr, toDateStr } = require("../../public/utils.js");
+const {
+  parseRecallResult,
+  escHtml,
+  escAttr,
+  toDateStr,
+  createCfSseParser,
+} = require("../../public/utils.js");
+
+describe("createCfSseParser", () => {
+  it("preserves a JSON event split across network chunks", () => {
+    const deltas: string[] = [];
+    let done = false;
+    const parser = createCfSseParser({
+      onResponse: (text: string) => deltas.push(text),
+      onDone: () => { done = true; },
+    });
+
+    parser.push('data: {"res');
+    parser.push('ponse":"你好"}\n\nda');
+    parser.push('ta: [DONE]\n\n');
+    parser.finish();
+
+    expect(deltas).toEqual(["你好"]);
+    expect(done).toBe(true);
+  });
+
+  it("parses multiple response events from one chunk", () => {
+    const deltas: string[] = [];
+    const parser = createCfSseParser({ onResponse: (text: string) => deltas.push(text) });
+
+    parser.push('data: {"response":"最近"}\n\ndata: {"response":"在开发"}\n\n');
+    parser.finish();
+
+    expect(deltas.join("")).toBe("最近在开发");
+  });
+});
 
 describe("parseRecallResult", () => {
   it("parses a JSON array of entries", () => {

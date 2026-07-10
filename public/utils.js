@@ -107,6 +107,78 @@ function normalizeEntry(e) {
   };
 }
 
+/* Incremental parser for the dashboard's `data: {"response":"..."}` SSE stream.
+ * Network reads may split an event at any byte boundary, so parsing is deferred
+ * until a blank-line event delimiter has arrived.
+ */
+function createCfSseParser(handlers) {
+  const onResponse = handlers && typeof handlers.onResponse === 'function'
+    ? handlers.onResponse
+    : function () {};
+  const onDone = handlers && typeof handlers.onDone === 'function'
+    ? handlers.onDone
+    : function () {};
+  const onError = handlers && typeof handlers.onError === 'function'
+    ? handlers.onError
+    : function () {};
+  let buffer = '';
+  let completed = false;
+
+  function consumeEvent(eventText) {
+    const data = eventText
+      .split(/\r?\n/)
+      .filter(line => line.startsWith('data:'))
+      .map(line => line.slice(5).trimStart())
+      .join('\n')
+      .trim();
+    if (!data) return;
+    if (data === '[DONE]') {
+      if (!completed) onDone();
+      completed = true;
+      return;
+    }
+    try {
+      const parsed = JSON.parse(data);
+      if (typeof parsed.response === 'string' && parsed.response) {
+        onResponse(parsed.response);
+      }
+    } catch (error) {
+      onError(error);
+    }
+  }
+
+  function drain(allowRemainder) {
+    let match;
+    while ((match = buffer.match(/\r?\n\r?\n/))) {
+      const end = match.index;
+      consumeEvent(buffer.slice(0, end));
+      buffer = buffer.slice(end + match[0].length);
+    }
+    if (allowRemainder && buffer.trim()) {
+      consumeEvent(buffer);
+      buffer = '';
+    }
+  }
+
+  return {
+    push(text) {
+      if (!text) return;
+      buffer += text;
+      drain(false);
+    },
+    finish() {
+      drain(true);
+    },
+  };
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { escHtml, escAttr, toDateStr, parseRecallResult, normalizeEntry };
+  module.exports = {
+    escHtml,
+    escAttr,
+    toDateStr,
+    parseRecallResult,
+    normalizeEntry,
+    createCfSseParser,
+  };
 }

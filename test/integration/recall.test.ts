@@ -67,6 +67,46 @@ describe("GET /recall", () => {
     expect(data.message).toBe("Nothing found matching that query.");
   });
 
+  it("uses recent chronological entries for 最近在忙什么 without embedding", async () => {
+    const now = Date.now();
+    for (let i = 0; i < 35; i++) {
+      db.entries.push({
+        id: `recent-${i}`,
+        content: `Project update ${i}`,
+        tags: '["work"]',
+        source: "codex",
+        created_at: now - i * 60_000,
+        vector_ids: "[]",
+      });
+    }
+    db.entries.push({
+      id: "too-old",
+      content: "Old project update",
+      tags: '["work"]',
+      source: "codex",
+      created_at: now - 31 * 86_400_000,
+      vector_ids: "[]",
+    });
+    const queryMock = vi.fn().mockResolvedValue({ matches: [] });
+    env = makeTestEnv(db, {
+      VECTORIZE: makeVectorizeMock({ query: queryMock }),
+    });
+
+    const res = await worker.fetch(
+      req("GET", `/recall?query=${encodeURIComponent("最近在忙什么")}`),
+      env,
+      ctx
+    );
+    const data = await res.json() as any;
+
+    expect(res.status).toBe(200);
+    expect(data.mode).toBe("recent_activity");
+    expect(data.results).toHaveLength(30);
+    expect(data.results[0].id).toBe("recent-0");
+    expect(data.results.some((entry: any) => entry.id === "too-old")).toBe(false);
+    expect(queryMock).not.toHaveBeenCalled();
+  });
+
   it("returns ranked matches hydrated from D1", async () => {
     db.entries.push(
       { id: "entry-1", content: "First memory", tags: '["work"]', source: "api", created_at: 1000, vector_ids: "[]", recall_count: 0, importance_score: 0 },

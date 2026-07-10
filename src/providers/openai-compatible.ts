@@ -65,6 +65,93 @@ function textToCfSseStream(text: string): ReadableStream {
   });
 }
 
+interface OpenAIChatPayload {
+  choices?: Array<{
+    delta?: { content?: string | null };
+    message?: { content?: string | null };
+  }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
+}
+
+function extractChatContent(payload: OpenAIChatPayload): string | null {
+  const content =
+    payload.choices?.[0]?.delta?.content ??
+    payload.choices?.[0]?.message?.content;
+  return typeof content === "string" ? content : null;
+}
+
+function openAiSseToCfSseStream(
+  source: ReadableStream<Uint8Array>,
+  record: (status: "success" | "error", output: string, usage?: OpenAIChatPayload["usage"], error?: unknown) => void
+): ReadableStream<Uint8Array> {
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let carry = "";
+  let output = "";
+  let usage: OpenAIChatPayload["usage"];
+  let doneSent = false;
+
+  const emitDone = (controller: TransformStreamDefaultController<Uint8Array>) => {
+    if (doneSent) return;
+    doneSent = true;
+    controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+  };
+
+  const processLine = (
+    rawLine: string,
+    controller: TransformStreamDefaultController<Uint8Array>
+  ) => {
+    const line = rawLine.replace(/\r$/, "");
+    if (!line.startsWith("data:")) return;
+    const data = line.slice(5).trimStart();
+    if (!data) return;
+    if (data === "[DONE]") {
+      emitDone(controller);
+      return;
+    }
+
+    const payload = JSON.parse(data) as OpenAIChatPayload;
+    if (payload.usage) usage = payload.usage;
+    const content = extractChatContent(payload);
+    if (!content) return;
+    output += content;
+    controller.enqueue(
+      encoder.encode(`data: ${JSON.stringify({ response: content })}\n\n`)
+    );
+  };
+
+  const transformer = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      try {
+        carry += decoder.decode(chunk, { stream: true });
+        const lines = carry.split("\n");
+        carry = lines.pop() ?? "";
+        for (const line of lines) processLine(line, controller);
+      } catch (error) {
+        record("error", output, usage, error);
+        throw error;
+      }
+    },
+    flush(controller) {
+      try {
+        carry += decoder.decode();
+        if (carry) processLine(carry, controller);
+        emitDone(controller);
+        record("success", output, usage);
+      } catch (error) {
+        record("error", output, usage, error);
+        throw error;
+      }
+    },
+  });
+
+  return source.pipeThrough(transformer);
+}
+
 /** Disable thinking for models that enable it by default (DeepSeek V4, MiniMax M3). */
 export function thinkingDisabledBody(): Record<string, unknown> {
   return { thinking: { type: "disabled" } };
@@ -150,8 +237,77 @@ export class OpenAICompatibleLLM implements LLMProvider {
   }
 
   async chatAsCfSse(messages: ChatMessage[], options: ChatOptions = {}): Promise<ReadableStream> {
-    const text = await this.chat(messages, options);
-    return textToCfSseStream(text);
+    const started = Date.now();
+    const inputPreview = messages.map((message) => message.content).join("\n").slice(0, 2000);
+    const body: Record<string, unknown> = {
+      model: this.model,
+      messages,
+      temperature: options.temperature ?? 0.2,
+      max_tokens: options.max_tokens,
+      stream: true,
+      ...(this.defaultExtraBody ?? {}),
+      ...(options.extraBody ?? {}),
+    };
+    if (options.jsonMode) body.response_format = { type: "json_object" };
+
+    let recorded = false;
+    const record = (
+      status: "success" | "error",
+      output: string,
+      usage?: OpenAIChatPayload["usage"],
+      error?: unknown
+    ) => {
+      if (recorded) return;
+      recorded = true;
+      logModelCall({
+        call_type: "chat",
+        provider: this.baseURL,
+        model: this.model,
+        duration_ms: Date.now() - started,
+        status,
+        input_tokens: usage?.prompt_tokens ?? null,
+        output_tokens: usage?.completion_tokens ?? null,
+        total_tokens: usage?.total_tokens ?? null,
+        input: inputPreview,
+        output,
+        error_message:
+          error instanceof Error ? error.message : error ? String(error) : null,
+      });
+    };
+
+    try {
+      const response = await fetch(`${this.baseURL}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream, application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) {
+        const errBody = await response.text().catch(() => "");
+        throw new Error(enrichLlmHttpError(response.status, errBody, this.baseURL));
+      }
+
+      const contentType = response.headers.get("content-type") || "";
+      if (!contentType.includes("text/event-stream")) {
+        const payload = (await response.json()) as OpenAIChatPayload;
+        const content = extractChatContent(payload);
+        if (content == null) {
+          throw new Error("LLM response missing choices[0].message.content");
+        }
+        record("success", content, payload.usage);
+        return textToCfSseStream(content);
+      }
+
+      if (!response.body) throw new Error("LLM streaming response body is empty");
+      return openAiSseToCfSseStream(response.body, record);
+    } catch (error) {
+      record("error", "", undefined, error);
+      throw error;
+    }
   }
 }
 

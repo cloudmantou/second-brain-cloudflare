@@ -4002,6 +4002,7 @@
         input.value = ''
         autoResize(input)
         const loadingEl = appendLoading(msgs)
+        let answerBubble = null
         msgs.scrollTop = msgs.scrollHeight
         try {
           // Use the REST endpoint for structured results — parsing the MCP tool's
@@ -4016,13 +4017,22 @@
           if (!data.results || !data.results.length) {
             appendBrainBubble(msgs, t('recall.empty'), 'recall-sys')
           } else {
+            const recentActivity = data.mode === 'recent_activity'
             // REST scores are already 0–100 (one decimal); map directly rather than via
             // normalizeEntry, whose 0–1 rescale heuristic would turn a 0.8% match into 80%
-            const entries = data.results.map((m) => ({ id: m.id, content: m.content, tags: m.tags || [], score: Math.min(100, Math.round(m.score)) }))
-            const answerBubble = document.createElement('div')
+            const entries = data.results.map((m) => ({
+              id: m.id,
+              content: m.content,
+              tags: m.tags || [],
+              score: recentActivity ? null : Math.min(100, Math.round(m.score)),
+              createdAt: m.created_at,
+              source: m.source || '',
+            }))
+            answerBubble = document.createElement('div')
             answerBubble.className = 'ex-a-row'
             const answerEl = document.createElement('div')
             answerEl.className = 'ex-a'
+            answerEl.textContent = '…'
             answerBubble.appendChild(answerEl)
             msgs.appendChild(answerBubble)
 
@@ -4034,40 +4044,50 @@
                 const date = new Date(m.created_at).toLocaleDateString()
                 const tagList = m.tags && m.tags.length ? ` [${m.tags.join(', ')}]` : ''
                 const src = m.source ? ` · ${m.source}` : ''
-                return `${i + 1}. [${date}${src}${tagList}] (${Math.min(100, Math.round(m.score))}% match)${m.updated ? ' [updated]' : ''}\n${m.content}`
+                const relevance = recentActivity ? '' : ` (${Math.min(100, Math.round(m.score))}% match)`
+                return `${i + 1}. [${date}${src}${tagList}]${relevance}${m.updated ? ' [updated]' : ''}\n${m.content}`
               }).join('\n\n')
             const res = await fetch(`${WORKER_URL}/chat`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AUTH_TOKEN}` },
-              body: JSON.stringify({ query, memories }),
+              body: JSON.stringify({ query, memories, mode: data.mode || 'semantic' }),
             })
+
+            if (!res.ok) throw new Error(`chat failed (${res.status})`)
+            if (!res.body) throw new Error('chat response body is empty')
+            const contentType = res.headers.get('content-type') || ''
+            if (!contentType.includes('text/event-stream')) {
+              throw new Error(`unexpected chat response: ${contentType || 'unknown content type'}`)
+            }
 
             const reader = res.body.getReader()
             const decoder = new TextDecoder()
             let fullText = ''
+            let parseError = null
+            const parser = createCfSseParser({
+              onResponse(text) {
+                fullText += text
+                answerEl.textContent = fullText
+              },
+              onError(error) {
+                parseError = error
+              },
+            })
             try {
               while (true) {
                 const { done, value } = await reader.read()
                 if (done) break
-                const chunk = decoder.decode(value)
-                chunk.split('\n').forEach((line) => {
-                  if (line.startsWith('data: ')) {
-                    const raw = line.slice(6).trim()
-                    if (raw === '[DONE]') return
-                    try {
-                      const d = JSON.parse(raw)
-                      if (d.response) {
-                        fullText += d.response
-                        answerEl.textContent = fullText
-                      }
-                    } catch {}
-                  }
-                })
+                parser.push(decoder.decode(value, { stream: true }))
                 msgs.scrollTop = msgs.scrollHeight
               }
+              parser.push(decoder.decode())
+              parser.finish()
             } finally {
               reader.releaseLock()
             }
+
+            if (parseError) throw parseError
+            if (!fullText.trim()) throw new Error('chat returned an empty answer')
 
             // Render markdown once the stream is complete (kept plain while streaming for speed)
             answerEl.innerHTML = renderAnswerMarkdown(fullText)
@@ -4087,8 +4107,10 @@
             msgs.appendChild(sourcesToggle)
             document.getElementById('recall-clear-btn').style.display = 'flex'
           }
-        } catch {
+        } catch (error) {
           loadingEl.remove()
+          if (answerBubble) answerBubble.remove()
+          console.error('recall chat failed:', error)
           appendBrainBubble(msgs, t('recall.error'), 'recall-sys')
         }
         msgs.scrollTop = msgs.scrollHeight
@@ -4098,12 +4120,15 @@
         const card = document.createElement('div')
         const isSynthesized = entry.tags.includes('synthesized')
         const isRolledUp = entry.tags.includes('rolled-up')
-        card.className = 'memory-card' + (isSynthesized ? ' card--synthesized' : '') + (isRolledUp ? ' card--rolled-up' : '')
-        card.innerHTML = `
-    <div class="match-line">
+        const matchLine = entry.score == null
+          ? `<div class="match-line"><span class="match-pct">${escHtml(new Date(entry.createdAt).toLocaleDateString())}${entry.source ? ` · ${escHtml(entry.source)}` : ''}</span></div>`
+          : `<div class="match-line">
       <span class="match-pct">${entry.score}%</span>
       <div class="match-bar-bg"><div class="match-bar-fill" style="width:${entry.score}%"></div></div>
-    </div>
+    </div>`
+        card.className = 'memory-card' + (isSynthesized ? ' card--synthesized' : '') + (isRolledUp ? ' card--rolled-up' : '')
+        card.innerHTML = `
+    ${matchLine}
     <div class="card-content" style="cursor: pointer;">${escHtml(entry.content)}</div>
     <div class="card-footer">
       <div class="card-tags">${entry.tags.map((tag) => `<span class="tag-chip${tag === 'synthesized' ? ' tag-chip--synthesized' : ''}">${escHtml(tag)}</span>`).join('')}</div>
