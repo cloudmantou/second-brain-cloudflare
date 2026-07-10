@@ -59,7 +59,10 @@ import {
   rewriteRequestPublicOrigin,
 } from "./oauth/public-origin";
 import { hardenOAuthResponse, oauthMethodProbe } from "./oauth/harden";
-import { checkOAuthRedirectOrigin } from "./oauth/redirect-policy";
+import {
+  checkOAuthRedirectOrigin,
+  oauthFormActionSources,
+} from "./oauth/redirect-policy";
 import { readPublicUrl, siteConfigJson } from "./config/site";
 import { planRecallRequest, type RecallRequestPlan } from "./query-intent";
 import { ensureMemoryDataModel } from "./memory/schema";
@@ -382,7 +385,15 @@ function loginHtml(
 </html>`;
 }
 
-function oauthLoginResponse(html: string, status = 200): Response {
+function oauthLoginResponse(
+  html: string,
+  status = 200,
+  /**
+   * form-action sources. Must include client redirect origins: Chrome/Safari
+   * enforce form-action on the post-submit redirect chain (OAuth code callback).
+   */
+  formActionSources = "'self' https://chatgpt.com http://127.0.0.1:* http://localhost:*"
+): Response {
   return new Response(html, {
     status,
     headers: {
@@ -394,8 +405,9 @@ function oauthLoginResponse(html: string, status = 200): Response {
       "X-Frame-Options": "DENY",
       "Content-Security-Policy":
         "default-src 'none'; style-src 'unsafe-inline' https://cdn.jsdelivr.net; " +
-        "font-src https://cdn.jsdelivr.net; img-src data:; form-action 'self'; " +
-        "base-uri 'none'; frame-ancestors 'none'",
+        "font-src https://cdn.jsdelivr.net; img-src data:; form-action " +
+        formActionSources +
+        "; base-uri 'none'; frame-ancestors 'none'",
     },
   });
 }
@@ -2469,6 +2481,9 @@ const defaultHandler = {
         oauthReq.redirectUri,
         env.OAUTH_ALLOWED_REDIRECT_ORIGINS
       );
+      // Allow listed OAuth callback hosts in form-action so Chrome does not block
+      // the 302 to redirect_uri after AUTH_TOKEN form POST (CSP form-action chain).
+      const formActionCsp = oauthFormActionSources(env.OAUTH_ALLOWED_REDIRECT_ORIGINS);
       if (!redirectPolicy.allowed) {
         return oauthLoginResponse(
           loginHtml(
@@ -2476,7 +2491,8 @@ const defaultHandler = {
             undefined,
             details
           ),
-          403
+          403,
+          formActionCsp
         );
       }
       if (request.method === "POST") {
@@ -2484,7 +2500,8 @@ const defaultHandler = {
         if (form.get("password") !== env.AUTH_TOKEN) {
           return oauthLoginResponse(
             loginHtml("令牌无效 / Invalid token", formAction, details),
-            401
+            401,
+            formActionCsp
           );
         }
         const { redirectTo } = await (env as any).OAUTH_PROVIDER.completeAuthorization({
@@ -2495,7 +2512,11 @@ const defaultHandler = {
         });
         return Response.redirect(redirectTo, 302);
       }
-      return oauthLoginResponse(loginHtml(undefined, formAction, details));
+      return oauthLoginResponse(
+        loginHtml(undefined, formAction, details),
+        200,
+        formActionCsp
+      );
     }
 
     await ensureDatabase(env);

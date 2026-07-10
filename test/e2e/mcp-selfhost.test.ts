@@ -240,6 +240,9 @@ describe("self-host MCP and personal OAuth", () => {
     expect(login.headers.get("referrer-policy")).toBe("no-referrer");
     expect(login.headers.get("x-frame-options")).toBe("DENY");
     expect(login.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    // Chrome enforces form-action on the OAuth post-submit redirect to the client.
+    expect(login.headers.get("content-security-policy")).toContain("form-action");
+    expect(login.headers.get("content-security-policy")).toContain("https://chatgpt.com");
     const loginHtml = await login.text();
     expect(loginHtml).toContain("仅个人实例使用");
     expect(loginHtml).toContain("private-second-brain-e2e");
