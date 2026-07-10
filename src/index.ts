@@ -26,6 +26,21 @@ import {
   saveStoredModelSettings,
 } from "./settings/store";
 import { importEntries, parseImportPayload, type ImportMode } from "./import-entries";
+import {
+  bindTelemetryDb,
+  ensureTelemetryTables,
+  flushTelemetry,
+  getTelemetryConfig,
+  logMemoryEvent,
+  logRequest,
+  newTraceId,
+  previewText,
+  purgeOldTelemetry,
+  routeToOperation,
+  runWithTelemetryAsync,
+  DEFAULT_TELEMETRY_CONFIG,
+  type TelemetryConfig,
+} from "./telemetry";
 
 export interface Env {
   DB: D1Database;
@@ -277,6 +292,23 @@ export async function initializeDatabase(env: Env): Promise<void> {
     try { await env.DB.exec(alter); } catch { /* column already exists — no-op */ }
   }
   await ensureSettingsTable(env.DB);
+  await ensureTelemetryTables(env.DB);
+  bindTelemetryDb(env.DB);
+}
+
+async function loadTelemetryConfig(env: Env): Promise<TelemetryConfig> {
+  try {
+    await ensureSettingsTable(env.DB);
+    const row = await env.DB.prepare(
+      `SELECT value FROM sb_app_settings WHERE key = ?`
+    )
+      .bind("telemetry_config")
+      .first<{ value: string }>();
+    if (!row?.value) return { ...DEFAULT_TELEMETRY_CONFIG };
+    return { ...DEFAULT_TELEMETRY_CONFIG, ...JSON.parse(row.value) };
+  } catch {
+    return { ...DEFAULT_TELEMETRY_CONFIG };
+  }
 }
 
 // ─── Duplicate detection ──────────────────────────────────────────────────────
@@ -1349,6 +1381,16 @@ export async function recallEntries(
   const maxScore = matches.reduce((mx, m) => Math.max(mx, m.score), 0);
   if (maxScore > 0) for (const m of matches) m.score = m.score / maxScore;
 
+  // Observatory: memory.recalled events (sample top matches)
+  for (let i = 0; i < Math.min(matches.length, 10); i++) {
+    const m = matches[i];
+    logMemoryEvent(m.id, "recalled", {
+      query: query.slice(0, 200),
+      score: m.score,
+      rank: i + 1,
+    }, "recall");
+  }
+
   const insight = d1Rows.length > 1
     ? await synthesizeInsight(embedQuery, d1Rows as { id: string; content: string }[], env)
     : "";
@@ -1465,8 +1507,11 @@ export async function captureEntry(
     `INSERT INTO entries (id, content, tags, source, created_at, vector_ids) VALUES (?, ?, ?, ?, ?, ?)`
   ).bind(id, c, JSON.stringify(finalTags), source, now, "[]").run();
 
+  logMemoryEvent(id, "created", { source, tags: finalTags }, source);
+
   ctx.waitUntil(
     storeEntry(env, id, c, finalTags, source, now)
+      .then(() => logMemoryEvent(id, "vectorized", {}, source))
       .catch(e => console.error("Vectorize insert failed (non-fatal):", e))
   );
 
@@ -1839,16 +1884,122 @@ function buildMcpServer(env: Env, ctx: ExecutionContext): McpServer {
 
 const apiHandler = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    await ensureDatabase(env);
-    const server = buildMcpServer(env, ctx);
-    return createMcpHandler(server)(request, env, ctx);
+    return withRequestTelemetry(request, env, ctx, async () => {
+      await ensureDatabase(env);
+      const server = buildMcpServer(env, ctx);
+      return createMcpHandler(server)(request, env, ctx);
+    });
   },
 };
 
 // ─── Default handler — all non-MCP routes ────────────────────────────────────
 
+async function withRequestTelemetry(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  handler: () => Promise<Response>
+): Promise<Response> {
+  const started = Date.now();
+  const url = new URL(request.url);
+  const traceId = request.headers.get("x-trace-id") || newTraceId();
+  const config = await loadTelemetryConfig(env);
+  bindTelemetryDb(env.DB);
+
+  let reqPreview: string | null = null;
+  let reqHash: string | null = null;
+  let requestBytes = 0;
+  try {
+    const clone = request.clone();
+    const text = await clone.text().catch(() => "");
+    requestBytes = new TextEncoder().encode(text).length;
+    const p = previewText(text, config.contentLogging, config.previewMaxChars);
+    reqPreview = p.preview;
+    reqHash = p.hash;
+  } catch {
+    /* ignore */
+  }
+
+  const source =
+    request.headers.get("x-sb-source") ||
+    request.headers.get("user-agent")?.slice(0, 80) ||
+    "api";
+
+  return runWithTelemetryAsync(
+    { traceId, config, db: env.DB, source },
+    async () => {
+      let response: Response;
+      try {
+        response = await handler();
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        logRequest({
+          trace_id: traceId,
+          method: request.method,
+          route: url.pathname,
+          operation: routeToOperation(request.method, url.pathname),
+          source,
+          status_code: 500,
+          success: 0,
+          started_at: started,
+          duration_ms: Date.now() - started,
+          request_bytes: requestBytes,
+          response_bytes: 0,
+          content_preview: reqPreview,
+          content_hash: reqHash,
+          error_code: "handler_error",
+          error_message: msg.slice(0, 500),
+        });
+        ctx.waitUntil(flushTelemetry(env.DB));
+        throw e;
+      }
+
+      const duration = Date.now() - started;
+      const success = response.status < 400 ? 1 : 0;
+      let responseBytes = 0;
+      try {
+        const cl = response.headers.get("content-length");
+        if (cl) responseBytes = parseInt(cl, 10) || 0;
+      } catch {
+        /* ignore */
+      }
+
+      logRequest({
+        trace_id: traceId,
+        method: request.method,
+        route: url.pathname,
+        operation: routeToOperation(request.method, url.pathname),
+        source,
+        status_code: response.status,
+        success,
+        started_at: started,
+        duration_ms: duration,
+        request_bytes: requestBytes,
+        response_bytes: responseBytes,
+        content_preview: reqPreview,
+        content_hash: reqHash,
+        error_code: success ? null : `http_${response.status}`,
+        error_message: success ? null : response.statusText || null,
+      });
+
+      // Non-blocking flush
+      ctx.waitUntil(flushTelemetry(env.DB));
+
+      // Expose trace id to clients
+      const headers = new Headers(response.headers);
+      headers.set("x-trace-id", traceId);
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+      });
+    }
+  );
+}
+
 const defaultHandler = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    return withRequestTelemetry(request, env, ctx, async () => {
     const url = new URL(request.url);
 
     // OAuth authorize endpoint — hosted login page for browser-based MCP clients.
@@ -2668,7 +2819,127 @@ const defaultHandler = {
       });
     }
 
+    // GET /analytics/overview — Observatory KPIs (last 24h by default)
+    if (url.pathname === "/analytics/overview" && request.method === "GET") {
+      const authErr = requireAuth(request, env);
+      if (authErr) return authErr;
+      await ensureTelemetryTables(env.DB);
+      const hours = Math.min(Math.max(parseInt(url.searchParams.get("hours") ?? "24", 10) || 24, 1), 168);
+      const since = Date.now() - hours * 3_600_000;
+
+      const reqStats = await env.DB.prepare(
+        `SELECT COUNT(*) as n,
+                SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as errors,
+                AVG(duration_ms) as avg_ms,
+                MAX(duration_ms) as max_ms
+         FROM sb_request_logs WHERE started_at >= ?`
+      ).bind(since).first() as Record<string, any> | null;
+
+      const modelStats = await env.DB.prepare(
+        `SELECT COUNT(*) as n,
+                SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors,
+                SUM(COALESCE(total_tokens, 0)) as tokens,
+                AVG(duration_ms) as avg_ms
+         FROM sb_model_calls WHERE created_at >= ?`
+      ).bind(since).first() as Record<string, any> | null;
+
+      const memStats = await env.DB.prepare(
+        `SELECT
+           SUM(CASE WHEN event_type = 'created' THEN 1 ELSE 0 END) as created,
+           SUM(CASE WHEN event_type = 'recalled' THEN 1 ELSE 0 END) as recalled
+         FROM sb_memory_events WHERE created_at >= ?`
+      ).bind(since).first() as Record<string, any> | null;
+
+      const topOps = await env.DB.prepare(
+        `SELECT operation, COUNT(*) as n, AVG(duration_ms) as avg_ms
+         FROM sb_request_logs WHERE started_at >= ?
+         GROUP BY operation ORDER BY n DESC LIMIT 10`
+      ).bind(since).all();
+
+      const n = Number(reqStats?.n ?? 0);
+      const errors = Number(reqStats?.errors ?? 0);
+
+      return json({
+        ok: true,
+        hours,
+        requests: {
+          count: n,
+          errors,
+          success_rate: n ? (n - errors) / n : 1,
+          avg_ms: reqStats?.avg_ms ?? null,
+          max_ms: reqStats?.max_ms ?? null,
+        },
+        models: {
+          count: Number(modelStats?.n ?? 0),
+          errors: Number(modelStats?.errors ?? 0),
+          tokens: Number(modelStats?.tokens ?? 0),
+          avg_ms: modelStats?.avg_ms ?? null,
+        },
+        memories: {
+          created: Number(memStats?.created ?? 0),
+          recalled: Number(memStats?.recalled ?? 0),
+        },
+        top_operations: topOps.results ?? [],
+        telemetry: await loadTelemetryConfig(env),
+      });
+    }
+
+    // GET /analytics/logs — recent request logs
+    if (url.pathname === "/analytics/logs" && request.method === "GET") {
+      const authErr = requireAuth(request, env);
+      if (authErr) return authErr;
+      await ensureTelemetryTables(env.DB);
+      const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") ?? "50", 10) || 50, 1), 200);
+      const op = url.searchParams.get("operation")?.trim();
+      let q;
+      if (op) {
+        q = await env.DB.prepare(
+          `SELECT * FROM sb_request_logs WHERE operation = ? ORDER BY started_at DESC LIMIT ?`
+        ).bind(op, limit).all();
+      } else {
+        q = await env.DB.prepare(
+          `SELECT * FROM sb_request_logs ORDER BY started_at DESC LIMIT ?`
+        ).bind(limit).all();
+      }
+      return json({ ok: true, logs: q.results ?? [] });
+    }
+
+    // GET /analytics/traces/:id
+    if (url.pathname.startsWith("/analytics/traces/") && request.method === "GET") {
+      const authErr = requireAuth(request, env);
+      if (authErr) return authErr;
+      await ensureTelemetryTables(env.DB);
+      const traceId = url.pathname.slice("/analytics/traces/".length);
+      if (!traceId) return json({ ok: false, error: "trace id required" }, 400);
+      const reqs = await env.DB.prepare(
+        `SELECT * FROM sb_request_logs WHERE trace_id = ? ORDER BY started_at`
+      ).bind(traceId).all();
+      const models = await env.DB.prepare(
+        `SELECT * FROM sb_model_calls WHERE trace_id = ? ORDER BY created_at`
+      ).bind(traceId).all();
+      const events = await env.DB.prepare(
+        `SELECT * FROM sb_memory_events WHERE trace_id = ? ORDER BY created_at`
+      ).bind(traceId).all();
+      return json({
+        ok: true,
+        trace_id: traceId,
+        requests: reqs.results ?? [],
+        model_calls: models.results ?? [],
+        memory_events: events.results ?? [],
+      });
+    }
+
+    // POST /analytics/purge — drop old telemetry rows
+    if (url.pathname === "/analytics/purge" && request.method === "POST") {
+      const authErr = requireAuth(request, env);
+      if (authErr) return authErr;
+      const cfg = await loadTelemetryConfig(env);
+      const result = await purgeOldTelemetry(env.DB, cfg.retentionDays);
+      return json({ ok: true, ...result, retentionDays: cfg.retentionDays });
+    }
+
     return new Response("Not found", { status: 404 });
+    }); // withRequestTelemetry
   },
 };
 

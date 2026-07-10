@@ -5,6 +5,7 @@
 
 import type { ChatMessage, ChatOptions, LLMProvider } from "./llm";
 import type { EmbeddingProvider } from "./embedding";
+import { logModelCall } from "../telemetry/queue";
 
 export interface OpenAICompatibleConfig {
   baseURL: string;
@@ -57,6 +58,8 @@ export class OpenAICompatibleLLM implements LLMProvider {
   }
 
   async chat(messages: ChatMessage[], options: ChatOptions = {}): Promise<string> {
+    const started = Date.now();
+    const inputPreview = messages.map((m) => m.content).join("\n").slice(0, 2000);
     const body: Record<string, unknown> = {
       model: this.model,
       messages,
@@ -70,28 +73,54 @@ export class OpenAICompatibleLLM implements LLMProvider {
       body.response_format = { type: "json_object" };
     }
 
-    const response = await fetch(`${this.baseURL}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
+    try {
+      const response = await fetch(`${this.baseURL}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify(body),
+      });
 
-    if (!response.ok) {
-      const errBody = await response.text().catch(() => "");
-      throw new Error(`LLM error ${response.status}: ${errBody.slice(0, 200)}`);
-    }
+      if (!response.ok) {
+        const errBody = await response.text().catch(() => "");
+        throw new Error(`LLM error ${response.status}: ${errBody.slice(0, 200)}`);
+      }
 
-    const json = (await response.json()) as {
-      choices?: { message?: { content?: string | null } }[];
-    };
-    const content = json.choices?.[0]?.message?.content;
-    if (typeof content !== "string") {
-      throw new Error("LLM response missing choices[0].message.content");
+      const json = (await response.json()) as {
+        choices?: { message?: { content?: string | null } }[];
+        usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+      };
+      const content = json.choices?.[0]?.message?.content;
+      if (typeof content !== "string") {
+        throw new Error("LLM response missing choices[0].message.content");
+      }
+      logModelCall({
+        call_type: "chat",
+        provider: this.baseURL,
+        model: this.model,
+        duration_ms: Date.now() - started,
+        status: "success",
+        input_tokens: json.usage?.prompt_tokens ?? null,
+        output_tokens: json.usage?.completion_tokens ?? null,
+        total_tokens: json.usage?.total_tokens ?? null,
+        input: inputPreview,
+        output: content,
+      });
+      return content;
+    } catch (e) {
+      logModelCall({
+        call_type: "chat",
+        provider: this.baseURL,
+        model: this.model,
+        duration_ms: Date.now() - started,
+        status: "error",
+        input: inputPreview,
+        error_message: e instanceof Error ? e.message : String(e),
+      });
+      throw e;
     }
-    return content;
   }
 
   async chatAsCfSse(messages: ChatMessage[], options: ChatOptions = {}): Promise<ReadableStream> {
@@ -116,6 +145,7 @@ export class OpenAICompatibleEmbedding implements EmbeddingProvider {
   }
 
   async embed(text: string): Promise<number[]> {
+    const started = Date.now();
     const body: Record<string, unknown> = {
       model: this.model,
       input: text,
@@ -129,32 +159,56 @@ export class OpenAICompatibleEmbedding implements EmbeddingProvider {
       body.dimensions = this.dimensions;
     }
 
-    const response = await fetch(`${this.baseURL}/embeddings`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
+    try {
+      const response = await fetch(`${this.baseURL}/embeddings`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify(body),
+      });
 
-    if (!response.ok) {
-      const errBody = await response.text().catch(() => "");
-      throw new Error(`Embedding error ${response.status}: ${errBody.slice(0, 200)}`);
-    }
+      if (!response.ok) {
+        const errBody = await response.text().catch(() => "");
+        throw new Error(`Embedding error ${response.status}: ${errBody.slice(0, 200)}`);
+      }
 
-    const json = (await response.json()) as {
-      data?: { embedding?: number[] }[];
-    };
-    const embedding = json.data?.[0]?.embedding;
-    if (!Array.isArray(embedding)) {
-      throw new Error("Embedding response missing data[0].embedding");
+      const json = (await response.json()) as {
+        data?: { embedding?: number[] }[];
+        usage?: { prompt_tokens?: number; total_tokens?: number };
+      };
+      const embedding = json.data?.[0]?.embedding;
+      if (!Array.isArray(embedding)) {
+        throw new Error("Embedding response missing data[0].embedding");
+      }
+      if (this.dimensions != null && embedding.length !== this.dimensions) {
+        throw new Error(
+          `Embedding dimension mismatch: expected ${this.dimensions}, got ${embedding.length}`
+        );
+      }
+      logModelCall({
+        call_type: "embedding",
+        provider: this.baseURL,
+        model: this.model,
+        duration_ms: Date.now() - started,
+        status: "success",
+        input_tokens: json.usage?.prompt_tokens ?? json.usage?.total_tokens ?? null,
+        total_tokens: json.usage?.total_tokens ?? null,
+        input: text,
+      });
+      return embedding;
+    } catch (e) {
+      logModelCall({
+        call_type: "embedding",
+        provider: this.baseURL,
+        model: this.model,
+        duration_ms: Date.now() - started,
+        status: "error",
+        input: text,
+        error_message: e instanceof Error ? e.message : String(e),
+      });
+      throw e;
     }
-    if (this.dimensions != null && embedding.length !== this.dimensions) {
-      throw new Error(
-        `Embedding dimension mismatch: expected ${this.dimensions}, got ${embedding.length}`
-      );
-    }
-    return embedding;
   }
 }

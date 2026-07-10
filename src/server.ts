@@ -21,6 +21,7 @@ import {
 import { handleWithWorker } from "./selfhost/fetch-adapter";
 import { getEffectiveModelSettings } from "./settings/store";
 import { isDevLocalProvider } from "./settings/model-settings";
+import { flushTelemetry } from "./telemetry";
 
 dotenv.config();
 
@@ -143,6 +144,7 @@ async function main() {
         urlPath.startsWith("/settings") ||
         urlPath.startsWith("/import") ||
         urlPath.startsWith("/export") ||
+        urlPath.startsWith("/analytics") ||
         urlPath.startsWith("/.well-known");
 
       if (!isApi) {
@@ -173,6 +175,17 @@ async function main() {
     `  LLM:      ${effective.llm.baseURL || env.LLM_BASE_URL || "(configure in Settings → Models)"}`
   );
 }
+
+async function shutdown() {
+  try {
+    await flushTelemetry();
+  } catch {
+    /* ignore */
+  }
+  process.exit(0);
+}
+process.on("SIGINT", () => void shutdown());
+process.on("SIGTERM", () => void shutdown());
 
 main().catch((err) => {
   console.error(err);
