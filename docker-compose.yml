@@ -1,5 +1,5 @@
 services:
-  second-brain:
+  singularity:
     build: .
     ports:
       # Bind loopback only — put Nginx/Caddy in front for public HTTPS.

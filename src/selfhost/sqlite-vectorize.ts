@@ -165,7 +165,7 @@ export class SqliteVectorizeIndex {
     }
     return {
       id: "local",
-      name: "second-brain-vectors",
+      name: "singularity-vectors",
       config: { dimensions, metric: "cosine" },
       vectorsCount: row.n,
       dimensions,

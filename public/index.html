@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-    <meta name="apple-mobile-web-app-title" content="第二大脑" />
+    <meta name="apple-mobile-web-app-title" content="Singularity" />
     <meta name="theme-color" content="#F4F1EA" />
-    <title>第二大脑</title>
+    <title>Singularity</title>
     <script src="i18n.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link
@@ -18,7 +18,7 @@
     <link rel="manifest" href="/manifest.json" />
     <style>
       /* ============================================================
-       Second Brain — Journal edition
+       Singularity — AI Memory Engine
        Editorial / serif-forward · warm paper · terracotta accent
        Light + dark via html[data-theme]. Variable names kept
        backward-compatible so inline styles keep resolving.
@@ -3042,7 +3042,7 @@
         <div class="brain-logo">
           <i class="ti ti-brain"></i>
         </div>
-        <h1 data-i18n="app.title">第二大脑</h1>
+        <h1 data-i18n="app.title">Singularity</h1>
         <p data-i18n="auth.blurb">输入 Bearer 令牌，连接到你的个人记忆层。</p>
         <form
           class="field-group"
@@ -3067,7 +3067,7 @@
             <i class="ti ti-brain"></i>
           </div>
           <div>
-            <div class="sb-brand-name" data-i18n="app.title">第二大脑</div>
+            <div class="sb-brand-name" data-i18n="app.title">Singularity</div>
             <div class="sb-brand-status" id="sb-status" data-i18n="status.always">始终记得</div>
           </div>
         </div>
@@ -3088,7 +3088,7 @@
             <i class="ti ti-brain"></i>
           </div>
           <div class="topbar-info">
-            <div class="topbar-name" data-i18n="app.title">第二大脑</div>
+            <div class="topbar-name" data-i18n="app.title">Singularity</div>
             <div class="topbar-status" id="topbar-status" data-i18n="status.always">始终记得</div>
           </div>
           <button class="topbar-menu" onclick="openMenu()"><i class="ti ti-dots"></i></button>
@@ -3319,7 +3319,7 @@
 
     <div id="menu-sheet">
       <div class="menu-inner">
-        <h3 data-i18n="menu.title">第二大脑</h3>
+        <h3 data-i18n="menu.title">Singularity</h3>
         <div class="stats-panel" id="stats-panel">
           <div class="stats-kpi-row">
             <div class="stats-kpi-card">
@@ -3489,7 +3489,7 @@
       <div class="models-inner" onclick="event.stopPropagation()">
         <h3 data-i18n="oauthClients.title">OAuth 客户端</h3>
         <p class="models-sub" data-i18n="oauthClients.sub">
-          这里列出已注册到个人 Second Brain 的 MCP 客户端。删除客户端会同时撤销它的所有授权。
+          这里列出已注册到个人 Singularity 的 MCP 客户端。删除客户端会同时撤销它的所有授权。
         </p>
         <div class="oauth-client-list" id="oauth-client-list"></div>
         <div class="models-msg" id="oauth-clients-msg"></div>
@@ -5423,10 +5423,10 @@
               null,
               2
             )
-            filename = `second-brain-export-${ts}.json`
+            filename = `singularity-export-${ts}.json`
             mime = 'application/json'
           } else {
-            const lines = [`# Second Brain Export`, `Exported: ${ts}`, `Total: ${entries.length}`, '']
+            const lines = [`# Singularity Export`, `Exported: ${ts}`, `Total: ${entries.length}`, '']
             entries.forEach((e, i) => {
               let tags = []
               try {
@@ -5444,7 +5444,7 @@
               lines.push('')
             })
             content = lines.join('\n')
-            filename = `second-brain-export-${ts}.md`
+            filename = `singularity-export-${ts}.md`
             mime = 'text/markdown'
           }
 

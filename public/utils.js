@@ -1,4 +1,4 @@
-/* utils.js — helper functions for the Second Brain UI.
+/* utils.js — helper functions for the Singularity UI.
  *
  * In production these are served from the Worker root. This file mirrors
  * them so the UI is fully functional in preview / offline as well.

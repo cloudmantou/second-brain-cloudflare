@@ -1,356 +1,128 @@
-# Second Brain
+# Singularity
 
-**One shared memory for Claude, ChatGPT, Cursor, Codex, and every other AI tool you use.**
+> The AI memory engine for your personal intelligence.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Built with Cloudflare Workers](https://img.shields.io/badge/Built%20with-Cloudflare%20Workers-F38020?logo=cloudflare\&logoColor=white)](https://workers.cloudflare.com/)
-[![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-8B5CF6)](https://modelcontextprotocol.io/)
+Singularity is a self-hosted long-term memory system designed for AI agents.
 
-You use Claude for some things, ChatGPT for others, and Cursor for code. But your context, including your projects, decisions, and preferences, does not move with you. You end up explaining yourself again and again.
+It transforms conversations, projects, decisions, and knowledge into an evolving memory network.
 
-Second Brain gives every AI tool access to the same persistent memory.
+The goal is not just storing information, but creating a system where memories can connect, evolve, and produce intelligence.
 
-Unlike memory built into a single app, this memory belongs to you. It runs in your own Cloudflare account, stays under your control, and cannot be locked inside one AI platform.
+## Features
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/rahilp/second-brain-cloudflare)
+- Long-term AI memory
+- Semantic vector search
+- Hybrid retrieval
+- MCP integration
+- Self-host deployment
+- Local-first data ownership
+- Memory classification
+- Memory lifecycle management
+- AI-powered summarization
+- Personal knowledge graph (coming soon)
 
-Deploying takes about two minutes. See the [Quick Start](#quick-start) for the required configuration values.
+## Vision
 
-> ## #3 Product of the Day on Product Hunt
->
-> <a href="https://www.producthunt.com/products/second-brain-cloudflare?embed=true&utm_source=badge-top-post-badge&utm_medium=badge&utm_campaign=badge-second-brain-for-ai" target="_blank" rel="noopener noreferrer"><img alt="Second Brain for AI: Persistent memory for Claude, ChatGPT, and Cursor" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/top-post-badge.svg?post_id=1151393&theme=light&period=daily&t=1780357463637"></a>
+The name Singularity comes from the concept of a black hole singularity:
 
-## See it in action
+A point where existing rules collapse and new intelligence emerges.
 
-[![Second Brain Demo](https://img.youtube.com/vi/h0JqRM0UxHE/hqdefault.jpg)](https://youtu.be/h0JqRM0UxHE)
+Singularity represents the transition from:
 
-## How it works
+```
+Storage → Memory
+Memory → Understanding
+Understanding → Intelligence
+```
 
-Connect Second Brain to the AI tools you already use, then save information as it comes up.
+## Architecture
 
-Second Brain retrieves memories by meaning rather than exact wording. Asking:
+Current architecture:
 
-> What did I decide about the pricing model?
+```
+User / Agent
+     |
+     v
+MCP Memory Layer
+     |
++----+----+
+|         |
+v         v
+Vector    Structured
+Search    Memory
+     |
+     v
+AI Reasoning Layer
+```
 
-can surface the correct memory even when the original note used completely different words.
+Future architecture:
 
-### Memory tools
+```
+             Memory Universe
 
-| Tool          | What it does                                             |
-| ------------- | -------------------------------------------------------- |
-| `remember`    | Store ideas, decisions, preferences, and project context |
-| `append`      | Add an update to an existing memory                      |
-| `update`      | Replace an existing memory                               |
-| `recall`      | Find memories by meaning rather than exact wording       |
-| `list_recent` | Browse recently saved memories                           |
-| `forget`      | Permanently delete a memory                              |
+          Entities
+             |
+    +--------+--------+
+    |                 |
+Projects          Knowledge
+    |
+Decisions
+    |
+Experiences
+```
 
-## Save from anywhere
-
-Memory is most useful when capturing information is easy. Second Brain connects to the tools and moments where context already exists.
-
-* **AI clients:** Use `remember` directly within Claude, ChatGPT, Cursor, Codex, and other MCP clients.
-
-* **Command line:** Run `brain remember`, `brain recall`, and other commands from your terminal.
-
-  ```bash
-  npm install -g second-brain-cf-cli
-  ```
-
-* **Obsidian:** Automatically sync notes using the [Second Brain Sync plugin](https://github.com/rahilp/second-brain-obsidian-plugin), also available through [Obsidian Community Plugins](https://community.obsidian.md/plugins/second-brain-sync).
-
-* **Browser extension:** Capture a page or highlighted text using the [Chrome extension](https://github.com/rahilp/second-brain-browser-extension).
-
-* **iPhone and iPad:** Use the Brain Dump, Text Brain Dump, and Save to Brain shortcuts in [`integrations/ios-shortcuts/`](integrations/ios-shortcuts/).
-
-* **Bookmarklet:** Use the lightweight bookmarklet in [`integrations/bookmarklet.js`](integrations/bookmarklet.js).
-
-## Quick Start
-
-Set up your Second Brain in three steps.
-
-### 1. Choose an authentication token
-
-Your `AUTH_TOKEN` is the password used to access your Second Brain.
-
-Use a randomly generated token rather than a memorable password:
+## Quick start (self-host)
 
 ```bash
-openssl rand -base64 32
-```
-
-Save this token somewhere secure. You will need it when authorizing clients and testing your deployment.
-
-### 2. Deploy to Cloudflare
-
-Click **[Deploy to Cloudflare](https://deploy.workers.cloudflare.com/?url=https://github.com/rahilp/second-brain-cloudflare)** and follow the prompts.
-
-Enter the following values during setup:
-
-| FIELD      | VALUE                           |
-| ---------- | ------------------------------- |
-| Dimensions | `384`                           |
-| Metric     | `cosine`                        |
-| AUTH_TOKEN | The token you created in step 1 |
-
-Cloudflare will provision the required resources and deploy your Worker automatically.
-
-When deployment finishes, copy your Worker URL. It will look similar to:
-
-```text
-https://your-worker-name.your-subdomain.workers.dev
-```
-
-### 3. Connect your AI clients
-
-Choose the instructions for the clients you use.
-
-#### Claude Code or Codex CLI
-
-Run the command for your operating system, replacing `YOUR-WORKER-URL` with the Worker URL from step 2.
-
-**macOS, Linux, WSL, or Git Bash**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/rahilp/second-brain-cloudflare/main/scripts/connect-ai-clients.sh | bash -s -- https://YOUR-WORKER-URL
-```
-
-**Windows PowerShell**
-
-```powershell
-iex "& { $(irm https://raw.githubusercontent.com/rahilp/second-brain-cloudflare/main/scripts/connect-ai-clients.ps1) } -WorkerUrl https://YOUR-WORKER-URL"
-```
-
-The setup script configures the MCP connection and global instructions using OAuth. Your authentication token is not passed to the script.
-
-#### ChatGPT or Claude desktop and web apps
-
-These clients require two manual setup steps:
-
-1. Add the provided custom instructions to the app's personalization settings.
-2. Add the following URL as a custom MCP connector:
-
-   ```text
-   https://YOUR-WORKER-URL/mcp
-   ```
-
-Follow the **[client-specific instructions in the wiki](../../wiki/Connect-to-AI-Clients)** for the exact menus and settings.
-
-Your Second Brain is now ready to use across every connected client.
-
-### Optional: Verify the deployment
-
-Replace `YOUR-WORKER-URL` and `YOUR-TOKEN` with your own values:
-
-```bash
-curl -X POST https://YOUR-WORKER-URL/capture \
-  -H "Authorization: Bearer YOUR-TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"content":"second brain is working","source":"test"}'
-```
-
-A successful response will look like:
-
-```json
-{"ok":true,"id":"..."}
-```
-
-<details>
-<summary><strong>How OAuth authentication works</strong></summary>
-
-The `/mcp` endpoint supports OAuth 2.0 discovery and dynamic client registration.
-
-Discovery documents (ChatGPT / MCP clients probe these first):
-
-```text
-GET https://YOUR-DOMAIN/.well-known/oauth-authorization-server
-GET https://YOUR-DOMAIN/.well-known/oauth-protected-resource/mcp
-```
-
-Example authorization-server metadata:
-
-```json
-{
-  "issuer": "https://YOUR-DOMAIN",
-  "authorization_endpoint": "https://YOUR-DOMAIN/oauth/authorize",
-  "token_endpoint": "https://YOUR-DOMAIN/oauth/token",
-  "registration_endpoint": "https://YOUR-DOMAIN/oauth/register",
-  "scopes_supported": ["mcp"]
-}
-```
-
-When you add the following URL as an MCP connector:
-
-```text
-https://YOUR-DOMAIN/mcp
-```
-
-a compatible client will:
-
-1. Detect the authentication requirement via `WWW-Authenticate` + protected-resource metadata.
-2. Register itself (`POST /oauth/register`).
-3. Open the hosted login page (`/oauth/authorize`) in your browser.
-4. Ask you to enter your `AUTH_TOKEN`.
-5. Exchange the code at `/oauth/token` and store the grant.
-
-This means your authentication token does not need to be placed in the client configuration or included in the connector URL.
-
-**Self-host — set your domain once in `.env`:**
-
-```bash
-# Required for ChatGPT / MCP OAuth absolute URLs (no trailing slash)
-PUBLIC_URL=https://YOUR-DOMAIN
-
-# Personal-instance redirect allowlist (also used as the secure default).
-# Add only clients you actually use. Loopback origins allow any local port.
-OAUTH_ALLOWED_REDIRECT_ORIGINS=https://chatgpt.com,http://127.0.0.1,http://localhost
-```
-
-Set `OAUTH_ALLOWED_REDIRECT_ORIGINS=*` only as an explicit, discouraged opt-out
-when a trusted MCP client requires an origin you cannot list directly.
-
-Aliases (first non-empty wins): `PUBLIC_URL` | `PUBLIC_BASE_URL` | `SITE_URL`.
-Inspect runtime config: `GET /config` (public, no secrets).
-
-Configure the self-host model runtime with your own OpenAI-compatible providers:
-
-```bash
-LLM_BASE_URL=https://YOUR-LLM-GATEWAY/v1
-LLM_API_KEY=...
-LLM_MODEL=...
-
-EMBEDDING_BASE_URL=https://YOUR-EMBEDDING-GATEWAY/v1
-EMBEDDING_API_KEY=...
-EMBEDDING_MODEL=...
-EMBEDDING_DIM=384
-```
-
-When `SELFHOST=1`, chat and production embeddings do not fall back to Workers AI.
-Missing third-party configuration fails explicitly. The web UI streams chat tokens
-from the configured LLM, while recent-activity questions such as “我在忙什么？”
-use the latest 30 days of chronological memories instead of a generic semantic Top-5.
-
-**Behind Nginx:** proxy **all** of these paths to the Node process (do not reserve `/.well-known` only for ACME):
-
-```nginx
-location ^~ /.well-known/oauth- {
-  proxy_pass http://127.0.0.1:8787;
-  proxy_set_header Host $host;
-  proxy_set_header X-Forwarded-Proto $scheme;
-  proxy_set_header X-Forwarded-Host $host;
-  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-}
-location /oauth/ {
-  proxy_pass http://127.0.0.1:8787;
-  proxy_set_header Host $host;
-  proxy_set_header X-Forwarded-Proto $scheme;
-  proxy_set_header X-Forwarded-Host $host;
-  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-}
-location /mcp {
-  proxy_pass http://127.0.0.1:8787;
-  proxy_set_header Host $host;
-  proxy_set_header X-Forwarded-Proto $scheme;
-  proxy_set_header X-Forwarded-Host $host;
-  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-}
-location /chat {
-  proxy_pass http://127.0.0.1:8787;
-  proxy_set_header Host $host;
-  proxy_set_header X-Forwarded-Proto $scheme;
-  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-  proxy_buffering off;
-  proxy_cache off;
-  proxy_read_timeout 300s;
-}
-```
-
-The self-host server rate-limits OAuth registration, authorization, and token
-requests per client IP. Its default request-body limit is 256 KiB; only `/mcp`
-(1 MiB) and authenticated `/import` (32 MiB) receive larger route-specific limits.
-Registered clients can be reviewed and revoked under **Settings → OAuth clients**;
-self-hosted clients expire after 30 days without an OAuth lookup or token refresh.
-
-The following clients support this flow:
-
-* ChatGPT
-* Claude.ai
-* Claude Code
-* Codex CLI
-
-You can also configure supported command-line clients manually:
-
-```bash
-claude mcp add --transport http second-brain https://YOUR-DOMAIN/mcp
-```
-
-```bash
-codex mcp add second-brain --url https://YOUR-DOMAIN/mcp
-```
-
-Clients that cannot open a browser, such as `mcp-remote` in a headless environment, can use static token authentication:
-
-```http
-Authorization: Bearer YOUR-AUTH-TOKEN
-```
-
-OAuth requires the `OAUTH_KV` namespace (Cloudflare) or the self-host SQLite KV table for client registrations and tokens. The Deploy to Cloudflare button provisions KV automatically.
-
-</details>
-
-<details>
-<summary><strong>Manual deployment</strong></summary>
-
-To deploy without the one-click button:
-
-```bash
+cp .env.example .env   # set AUTH_TOKEN and AI/embedding keys
 npm install
-npm run vectors:create
-npm run deploy
+npm run selfhost
 ```
 
-`npm run vectors:create` creates the Vectorize index (384 dimensions, cosine). Wrangler then provisions the remaining Cloudflare resources automatically and fills in the required values in `wrangler.jsonc`.
+Open `http://127.0.0.1:8787`, then connect MCP clients to `https://YOUR-DOMAIN/mcp`.
 
-</details>
+Docker:
 
-## Documentation
+```bash
+docker compose up -d --build
+```
 
-* [Setup Guide](../../wiki/Setup-Guide): Deploy the Worker, configure authentication, and connect AI clients
-* [How It Works](../../wiki/How-It-Works): Semantic search, chunking, memory classification, and duplicate detection
-* [Connect to AI Clients](../../wiki/Connect-to-AI-Clients): ChatGPT, Claude, Claude Code, Codex, and other MCP clients
-* [Capture from Anywhere](../../wiki/Capture-from-Anywhere): Browser extension, bookmarklet, iOS Shortcuts, and share sheet
-* [Web UI](../../wiki/Web-UI): Dashboard and mobile interface
-* [Obsidian Plugin](../../wiki/Obsidian-Plugin): Installation, configuration, and sync modes
-* [API Reference](../../wiki/API-Reference): REST and MCP endpoints
+## MCP
 
-## Technology
+```bash
+claude mcp add --transport http singularity https://YOUR-DOMAIN/mcp
+codex mcp add singularity --url https://YOUR-DOMAIN/mcp
+```
 
-Second Brain is built with:
+## Origin
 
-* Cloudflare Workers
-* D1 SQLite
-* Cloudflare Vectorize
-* Workers AI
-* Cloudflare KV
-* Model Context Protocol
-* TypeScript
+Inspired by [second-brain-cloudflare](https://github.com/rahilp/second-brain-cloudflare).
 
-The self-host runtime additionally uses Node.js, Fastify, SQLite, and configurable
-OpenAI-compatible chat and embedding providers. Cloudflare resources remain available
-for Worker deployments but are not required for self-host model inference.
+The original project provided the foundation of:
 
-It runs within Cloudflare's free tier at personal scale.
+- MCP integration
+- Cloudflare Worker architecture
+- Vector memory storage
+- AI retrieval pipeline
 
-Your data stays in your own Cloudflare account.
+**Singularity is an independent open-source project** that continues to evolve with:
 
-## Star History
+- new memory architecture
+- entity relationships
+- knowledge graph
+- AI-native retrieval
+- personal intelligence systems
 
-<a href="https://www.star-history.com/?repos=rahilp%2Fsecond-brain-cloudflare&type=date&legend=top-left">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=rahilp/second-brain-cloudflare&type=date&theme=dark&legend=top-left" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=rahilp/second-brain-cloudflare&type=date&legend=top-left" />
-    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=rahilp/second-brain-cloudflare&type=date&legend=top-left" />
-  </picture>
-</a>
+It is not a rename-only fork. It is a product line for a long-term AI memory engine.
 
-[MIT License](LICENSE) · [Discussions](https://github.com/rahilp/second-brain-cloudflare/discussions)
+## Roadmap
+
+| Version | Theme | Focus |
+|---------|--------|--------|
+| v0.1.0 | Foundation | MCP memory, vector retrieval, self-host, AI chat |
+| v0.2.0 | Memory Intelligence | atomic memory, entity extraction, graph, revisions |
+| v0.3.0 | Memory Universe | 3D graph, timeline, project galaxy, AI evolution |
+
+## License
+
+MIT License

@@ -1,5 +1,5 @@
 /**
- * Lightweight i18n for Second Brain UI.
+ * Lightweight i18n for Singularity UI.
  * - Auto: navigator.language (zh* → 中文, else English)
  * - Override: localStorage sb_lang = auto | zh | en
  * - API: t(key, vars?), setLang(mode), getLang(), applyI18n(root?)
@@ -16,8 +16,8 @@
 
   const en = {
     // meta
-    "app.title": "Second Brain",
-    "app.appleTitle": "Second Brain",
+    "app.title": "Singularity",
+    "app.appleTitle": "Singularity",
 
     // auth
     "auth.blurb": "Enter your Bearer token to connect to your personal memory layer.",
@@ -117,7 +117,7 @@
     "view.forget": "Forget",
 
     // menu / stats
-    "menu.title": "Second Brain",
+    "menu.title": "Singularity",
     "menu.memories": "Memories",
     "menu.avgImportance": "Avg Importance",
     "menu.topTags": "Most used tags",
@@ -169,7 +169,7 @@
     // models sheet
     "models.title": "Models & API",
     "oauthClients.title": "OAuth clients",
-    "oauthClients.sub": "Clients registered with this personal Second Brain. Deleting one also revokes all of its grants.",
+    "oauthClients.sub": "Clients registered with this personal Singularity instance. Deleting one also revokes all of its grants.",
     "oauthClients.loading": "Loading OAuth clients…",
     "oauthClients.empty": "No OAuth clients registered.",
     "oauthClients.refresh": "Refresh",
@@ -238,11 +238,11 @@
     "models.notJson": "Response is not JSON (HTTP {status}): {body}",
 
     // observatory
-    "obs.title": "Observatory · Second Brain",
+    "obs.title": "Observatory · Singularity",
     "obs.back": "← App",
     "obs.heading": "Observatory",
     "obs.sub": "Request / model / memory telemetry",
-    "obs.authBlurb": "Use the same Bearer token as Second Brain. Opening from Settings may prefill it.",
+    "obs.authBlurb": "Use the same Bearer token as Singularity. Opening from Settings may prefill it.",
     "obs.refresh": "Refresh",
     "obs.refreshing": "Refreshing…",
     "obs.autoRefresh": "Auto refresh",
@@ -286,8 +286,8 @@
   };
 
   const zh = {
-    "app.title": "第二大脑",
-    "app.appleTitle": "第二大脑",
+    "app.title": "Singularity",
+    "app.appleTitle": "Singularity",
 
     "auth.blurb": "输入 Bearer 令牌，连接到你的个人记忆层。",
     "auth.token.ph": "Bearer 令牌",
@@ -379,7 +379,7 @@
     "view.edit": "编辑",
     "view.forget": "忘记",
 
-    "menu.title": "第二大脑",
+    "menu.title": "Singularity",
     "menu.memories": "记忆数",
     "menu.avgImportance": "平均重要度",
     "menu.topTags": "常用标签",
@@ -429,7 +429,7 @@
 
     "models.title": "模型与 API",
     "oauthClients.title": "OAuth 客户端",
-    "oauthClients.sub": "这里列出已注册到个人 Second Brain 的 MCP 客户端。删除客户端会同时撤销它的所有授权。",
+    "oauthClients.sub": "这里列出已注册到个人 Singularity 的 MCP 客户端。删除客户端会同时撤销它的所有授权。",
     "oauthClients.loading": "正在加载 OAuth 客户端…",
     "oauthClients.empty": "暂无已注册的 OAuth 客户端。",
     "oauthClients.refresh": "刷新",
@@ -497,11 +497,11 @@
     "models.emptyResponse": "服务器返回空响应 (HTTP {status})。请确认已 git pull origin selfhost 并重启 npm run server",
     "models.notJson": "响应不是 JSON (HTTP {status}): {body}",
 
-    "obs.title": "观测台 · 第二大脑",
+    "obs.title": "观测台 · Singularity",
     "obs.back": "← 返回应用",
     "obs.heading": "观测台",
     "obs.sub": "请求 / 模型 / 记忆遥测",
-    "obs.authBlurb": "使用与第二大脑相同的 Bearer 令牌登录。可从主应用设置进入本页后自动带入。",
+    "obs.authBlurb": "使用与 Singularity 相同的 Bearer 令牌登录。可从主应用设置进入本页后自动带入。",
     "obs.refresh": "刷新",
     "obs.refreshing": "刷新中…",
     "obs.autoRefresh": "自动刷新",

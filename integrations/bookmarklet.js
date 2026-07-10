@@ -1,12 +1,12 @@
 /**
- * Second Brain — Browser Bookmarklet
+ * Singularity — Browser Bookmarklet
  *
  * Setup:
- * 1. Replace YOUR_WORKER_URL with your Worker URL (e.g. second-brain.yourname.workers.dev)
+ * 1. Replace YOUR_WORKER_URL with your Worker URL (e.g. singularity.yourname.workers.dev)
  * 2. Replace YOUR_TOKEN with your AUTH_TOKEN secret
  * 3. Create a new bookmark in your browser
  * 4. Paste the entire javascript: line below as the bookmark URL
- * 5. Click it on any page to save to your second brain
+ * 5. Click it on any page to save to Singularity
  *
  * Usage:
  * - Click the bookmark with nothing selected → saves page title + URL

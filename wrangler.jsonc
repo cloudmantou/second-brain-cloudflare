@@ -1,6 +1,6 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "second-brain",
+	"name": "singularity",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-06-17",
 	"compatibility_flags": [
@@ -9,13 +9,13 @@
 	"d1_databases": [
 		{
 			"binding": "DB",
-			"database_name": "second-brain-db"
+			"database_name": "singularity-db"
 		}
 	],
 	"vectorize": [
 		{
 			"binding": "VECTORIZE",
-			"index_name": "second-brain-vectors"
+			"index_name": "singularity-vectors"
 		}
 	],
 	"ai": {

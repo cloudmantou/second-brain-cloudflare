@@ -311,7 +311,7 @@ async function main() {
   const { readPublicUrlFromProcess, siteConfigJson } = await import("./config/site");
   const publicUrl = readPublicUrlFromProcess();
   const site = siteConfigJson(publicUrl);
-  console.log(`Second Brain self-host listening on http://${displayHost}:${PORT}`);
+  console.log(`Singularity self-host listening on http://${displayHost}:${PORT}`);
   console.log(`  database: ${databasePath}`);
   console.log(`  MCP local: http://${displayHost}:${PORT}/mcp`);
   if (publicUrl) {

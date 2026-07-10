@@ -1,6 +1,8 @@
 /**
- * Second Brain — Cloudflare Worker
- * https://github.com/rahilp/second-brain-cloudflare
+ * Singularity — self-hosted AI memory engine
+ * https://github.com/cloudmantou/Singularity
+ *
+ * Inspired by second-brain-cloudflare; evolving as an independent product.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -314,7 +316,7 @@ function loginHtml(
         <div><dt>请求访问的客户端</dt><dd>${escapeOAuthHtml(details.clientName)}</dd></div>
         <div><dt>客户端 ID</dt><dd class="mono">${escapeOAuthHtml(details.clientId)}</dd></div>
         <div><dt>回调地址</dt><dd class="mono">${escapeOAuthHtml(details.redirectUri)}</dd></div>
-        <div><dt>权限</dt><dd>${details.scope.includes("mcp") ? "读取、写入和删除你的 Second Brain 记忆" : escapeOAuthHtml(details.scope.join(", "))}</dd></div>
+        <div><dt>权限</dt><dd>${details.scope.includes("mcp") ? "读取、写入和删除你的 Singularity 记忆" : escapeOAuthHtml(details.scope.join(", "))}</dd></div>
       </dl>`
     : "";
   const formHtml = action && details
@@ -332,7 +334,7 @@ function loginHtml(
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta name="theme-color" content="#F4F1EA" />
-  <title>授权 · 第二大脑</title>
+  <title>授权 · Singularity</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -374,7 +376,7 @@ function loginHtml(
 <body>
   <div class="auth-card">
     <div class="brain-logo"><i class="ti ti-brain"></i></div>
-    <h1>第二大脑</h1>
+    <h1>Singularity</h1>
     <p>这是个人 MCP 授权请求。确认客户端和回调地址后，再输入服务器 AUTH_TOKEN。</p>
     ${detailHtml}
     ${formHtml}
@@ -1996,7 +1998,7 @@ export async function applyStatus(id: string, status: MemoryStatus, env: Env): P
 // ─── MCP Server ───────────────────────────────────────────────────────────────
 
 function buildMcpServer(env: Env, ctx: ExecutionContext): McpServer {
-  const server = new McpServer({ name: "second-brain", version: "1.0.0" });
+  const server = new McpServer({ name: "singularity", version: "0.1.0" });
 
   // ── remember ────────────────────────────────────────────────────────────
   server.registerTool(

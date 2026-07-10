@@ -87,7 +87,7 @@ function initializeMessage(id: number): Record<string, unknown> {
 beforeAll(async () => {
   const port = await reservePort();
   baseUrl = `http://127.0.0.1:${port}`;
-  tempDir = await mkdtemp(path.join(os.tmpdir(), "second-brain-mcp-e2e-"));
+  tempDir = await mkdtemp(path.join(os.tmpdir(), "singularity-mcp-e2e-"));
 
   child = spawn(
     process.execPath,
@@ -168,7 +168,7 @@ describe("self-host MCP and personal OAuth", () => {
       id: 2,
       result: {
         protocolVersion: "2025-06-18",
-        serverInfo: { name: "second-brain" },
+        serverInfo: { name: "singularity" },
       },
     });
 
@@ -203,7 +203,7 @@ describe("self-host MCP and personal OAuth", () => {
         Origin: "https://chatgpt.com",
       },
       body: JSON.stringify({
-        client_name: "private-second-brain-e2e",
+        client_name: "private-singularity-e2e",
         redirect_uris: [redirectUri],
         grant_types: ["authorization_code", "refresh_token"],
         response_types: ["code"],
@@ -245,7 +245,7 @@ describe("self-host MCP and personal OAuth", () => {
     expect(login.headers.get("content-security-policy")).toContain("https://chatgpt.com");
     const loginHtml = await login.text();
     expect(loginHtml).toContain("仅个人实例使用");
-    expect(loginHtml).toContain("private-second-brain-e2e");
+    expect(loginHtml).toContain("private-singularity-e2e");
     expect(loginHtml).toContain("https://chatgpt.com/aip/callback");
     expect(loginHtml).toContain("读取、写入和删除");
 

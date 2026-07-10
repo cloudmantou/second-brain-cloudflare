@@ -47,7 +47,7 @@ Tags to use:
 - idea — concepts, plans, brainstorms, half-formed thoughts
 - context — background info about ongoing situations, constraints, environment
 - claude-response — summaries of important responses or recommendations
-- [auto-detected project/topic tag] — always combine with one of the above (e.g. ["task", "second-brain"])
+- [auto-detected project/topic tag] — always combine with one of the above (e.g. ["task", "singularity"])
 
 Always set source to "claude-desktop" when storing.
 

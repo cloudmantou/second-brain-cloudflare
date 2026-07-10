@@ -1,5 +1,5 @@
 /**
- * Import a Second Brain JSON export (Cloudflare dashboard or /list export) into
+ * Import a Singularity / Second Brain JSON export (dashboard or /list export) into
  * the self-host SQLite database.
  *
  * Usage:

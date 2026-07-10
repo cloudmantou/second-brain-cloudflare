@@ -35,7 +35,7 @@ async function main() {
     .join('\n');
 
   if (formatted) {
-    process.stdout.write(`[Second Brain] Context recalled:\n${formatted}\n`);
+    process.stdout.write(`[Singularity] Context recalled:\n${formatted}\n`);
   }
 }
 
