@@ -163,21 +163,53 @@ A successful response will look like:
 
 The `/mcp` endpoint supports OAuth 2.0 discovery and dynamic client registration.
 
+Discovery documents (ChatGPT / MCP clients probe these first):
+
+```text
+GET https://YOUR-DOMAIN/.well-known/oauth-authorization-server
+GET https://YOUR-DOMAIN/.well-known/oauth-protected-resource/mcp
+```
+
+Example authorization-server metadata:
+
+```json
+{
+  "issuer": "https://YOUR-DOMAIN",
+  "authorization_endpoint": "https://YOUR-DOMAIN/oauth/authorize",
+  "token_endpoint": "https://YOUR-DOMAIN/oauth/token",
+  "registration_endpoint": "https://YOUR-DOMAIN/oauth/register",
+  "scopes_supported": ["mcp"]
+}
+```
+
 When you add the following URL as an MCP connector:
 
 ```text
-https://YOUR-WORKER-URL/mcp
+https://YOUR-DOMAIN/mcp
 ```
 
 a compatible client will:
 
-1. Detect the authentication requirement.
-2. Register itself with your Worker.
-3. Open the hosted login page in your browser.
+1. Detect the authentication requirement via `WWW-Authenticate` + protected-resource metadata.
+2. Register itself (`POST /oauth/register`).
+3. Open the hosted login page (`/oauth/authorize`) in your browser.
 4. Ask you to enter your `AUTH_TOKEN`.
-5. Store the resulting OAuth authorization.
+5. Exchange the code at `/oauth/token` and store the grant.
 
 This means your authentication token does not need to be placed in the client configuration or included in the connector URL.
+
+**Self-host behind Nginx:** set `PUBLIC_URL=https://YOUR-DOMAIN` in `.env`, and proxy **all** of these paths to the Node process (do not reserve `/.well-known` only for ACME):
+
+```nginx
+location ^~ /.well-known/oauth- {
+  proxy_pass http://127.0.0.1:8787;
+  proxy_set_header Host $host;
+  proxy_set_header X-Forwarded-Proto $scheme;
+  proxy_set_header X-Forwarded-Host $host;
+}
+location /oauth/ { proxy_pass http://127.0.0.1:8787; /* same headers */ }
+location /mcp { proxy_pass http://127.0.0.1:8787; /* same headers */ }
+```
 
 The following clients support this flow:
 
@@ -189,11 +221,11 @@ The following clients support this flow:
 You can also configure supported command-line clients manually:
 
 ```bash
-claude mcp add --transport http second-brain https://YOUR-WORKER-URL/mcp
+claude mcp add --transport http second-brain https://YOUR-DOMAIN/mcp
 ```
 
 ```bash
-codex mcp add second-brain --url https://YOUR-WORKER-URL/mcp
+codex mcp add second-brain --url https://YOUR-DOMAIN/mcp
 ```
 
 Clients that cannot open a browser, such as `mcp-remote` in a headless environment, can use static token authentication:
@@ -202,7 +234,7 @@ Clients that cannot open a browser, such as `mcp-remote` in a headless environme
 Authorization: Bearer YOUR-AUTH-TOKEN
 ```
 
-OAuth requires the `OAUTH_KV` namespace for client registrations and tokens. The Deploy to Cloudflare button provisions it automatically.
+OAuth requires the `OAUTH_KV` namespace (Cloudflare) or the self-host SQLite KV table for client registrations and tokens. The Deploy to Cloudflare button provisions KV automatically.
 
 </details>
 
