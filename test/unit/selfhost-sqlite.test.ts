@@ -6,6 +6,7 @@ import Database from "better-sqlite3";
 import { SqliteD1Database } from "../../src/selfhost/sqlite-d1";
 import { SqliteVectorizeIndex } from "../../src/selfhost/sqlite-vectorize";
 import { SqliteKVNamespace } from "../../src/selfhost/sqlite-kv";
+import { initializeDatabase, type Env } from "../../src/index";
 
 describe("SqliteD1Database", () => {
   let dbPath: string;
@@ -51,6 +52,81 @@ describe("SqliteD1Database", () => {
       .all<{ value: string }>();
     expect(results.map((r) => r.value)).toEqual(["second-brain", "work"]);
   });
+
+  it("adds durable classification state columns idempotently", async () => {
+    const env = { DB: d1 as unknown as D1Database } as Env;
+    await initializeDatabase(env);
+    await initializeDatabase(env);
+    const columns = raw.prepare(`PRAGMA table_info('entries')`).all() as Array<{
+      name: string;
+      dflt_value: string | number | null;
+    }>;
+    const byName = new Map(columns.map(column => [column.name, column]));
+    expect([...byName.keys()]).toEqual(expect.arrayContaining([
+      "classification_confidence",
+      "classification_status",
+      "classification_error",
+      "classification_attempts",
+      "classification_next_attempt_at",
+      "classification_started_at",
+      "classification_version",
+      "classified_at",
+    ]));
+    expect(byName.get("classification_status")?.dflt_value).toContain("pending");
+    expect(byName.get("classification_attempts")?.dflt_value).toBe("0");
+    const indexes = raw.prepare(`PRAGMA index_list('entries')`).all() as Array<{ name: string }>;
+    expect(indexes.map(index => index.name)).toContain("idx_entries_classification_queue");
+  });
+
+  it("backfills legacy kind-tagged rows into durable successful classification state", async () => {
+    raw.exec(`CREATE TABLE entries (
+      id TEXT PRIMARY KEY,
+      content TEXT NOT NULL,
+      tags TEXT NOT NULL DEFAULT '[]',
+      source TEXT NOT NULL DEFAULT 'api',
+      created_at INTEGER NOT NULL,
+      vector_ids TEXT NOT NULL DEFAULT '[]'
+    )`);
+    raw.prepare(
+      `INSERT INTO entries (id, content, tags, source, created_at, vector_ids)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run("legacy-kind", "Legacy fact", '["work","kind:semantic"]', "api", 1234, "[]");
+    raw.prepare(
+      `INSERT INTO entries (id, content, tags, source, created_at, vector_ids)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run("legacy-status-only", "Needs kind", '["status:draft"]', "api", 1235, "[]");
+    raw.prepare(
+      `INSERT INTO entries (id, content, tags, source, created_at, vector_ids)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(
+      "legacy-conflicting-kinds",
+      "Conflicting legacy kinds",
+      '["kind:semantic","kind:episodic"]',
+      "api",
+      1236,
+      "[]"
+    );
+
+    await initializeDatabase({ DB: d1 as unknown as D1Database } as Env);
+
+    expect(raw.prepare(`SELECT * FROM entries WHERE id = ?`).get("legacy-kind")).toMatchObject({
+      classification_status: "succeeded",
+      classification_confidence: 0.5,
+      classification_attempts: 1,
+      classified_at: 1234,
+    });
+    expect(raw.prepare(`SELECT * FROM entries WHERE id = ?`).get("legacy-status-only")).toMatchObject({
+      classification_status: "pending",
+      classification_confidence: null,
+      classification_attempts: 0,
+    });
+    expect(raw.prepare(`SELECT * FROM entries WHERE id = ?`).get("legacy-conflicting-kinds")).toMatchObject({
+      classification_status: "pending",
+      classification_confidence: null,
+      classification_attempts: 0,
+    });
+  });
+
 });
 
 describe("SqliteVectorizeIndex", () => {

@@ -16,6 +16,7 @@ function seedEntry(db: D1Mock, overrides: Partial<ReturnType<typeof makeEntry>> 
 function makeEntry(overrides: Partial<{
   id: string; content: string; tags: string; source: string;
   created_at: number; vector_ids: string; recall_count: number; importance_score: number;
+  classification_status: string; classification_confidence: number | null;
 }> = {}) {
   return {
     id: "entry-abc",
@@ -26,6 +27,8 @@ function makeEntry(overrides: Partial<{
     vector_ids: '["entry-abc"]',
     recall_count: 0,
     importance_score: 3,
+    classification_status: "succeeded",
+    classification_confidence: 0.9,
     ...overrides,
   };
 }
@@ -103,6 +106,8 @@ describe("POST /update", () => {
     expect(data.ok).toBe(true);
     expect(data.id).toBe("entry-abc");
     expect(db.entries[0].content).toBe("Updated content");
+    expect(db.entries[0].classification_status).not.toBe("succeeded");
+    expect(db.entries[0].classification_confidence).toBeNull();
     expect(db.revisions).toContainEqual(
       expect.objectContaining({
         memory_id: "entry-abc",

@@ -450,6 +450,9 @@ describe("captureEntry()", () => {
   // ── Importance scoring ──────────────────────────────────────────────────────
 
   it("schedules importance scoring via ctx.waitUntil for stored entries", async () => {
+    env = makeTestEnv(db, {
+      AI: makeContradictionAI('{"importance":4,"confidence":0.9,"canonical":false,"kind":"semantic"}'),
+    });
     const { ctx, drain } = makeCtx();
     await captureEntry("Important decision", [], "api", env, ctx);
     await drain();
@@ -473,7 +476,7 @@ describe("captureEntry()", () => {
         run: vi.fn().mockImplementation(async (model: string) => {
           if (model === "@cf/baai/bge-small-en-v1.5")
             return { data: [new Array(384).fill(0.1)] };
-          return makeSseStream('{"importance":5,"canonical":true}');
+          return makeSseStream('{"importance":5,"confidence":0.95,"canonical":true,"kind":"semantic"}');
         }),
       } as unknown as Ai,
     });
@@ -500,7 +503,7 @@ describe("captureEntry()", () => {
         run: vi.fn().mockImplementation(async (model: string) => {
           if (model === "@cf/baai/bge-small-en-v1.5")
             return { data: [new Array(384).fill(0.1)] };
-          return makeSseStream('{"importance":2,"canonical":false}');
+          return makeSseStream('{"importance":2,"confidence":0.8,"canonical":false,"kind":"episodic"}');
         }),
       } as unknown as Ai,
     });
@@ -547,7 +550,7 @@ describe("captureEntry()", () => {
           // object that satisfies both decoders lets a single mock serve both calls.
           return new ReadableStream({
             start(c) {
-              const payload = '{"contradicts":true,"conflicting_id":"canonical-conflict","reason":"different city","importance":5,"canonical":true}';
+              const payload = '{"contradicts":true,"conflicting_id":"canonical-conflict","reason":"different city","importance":5,"confidence":0.95,"canonical":true,"kind":"semantic"}';
               c.enqueue(new TextEncoder().encode(`data: {"response":${JSON.stringify(payload)}}\n\n`));
               c.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
               c.close();
@@ -592,7 +595,7 @@ describe("captureEntry()", () => {
         run: vi.fn().mockImplementation(async (model: string) => {
           if (model === "@cf/baai/bge-small-en-v1.5")
             return { data: [new Array(384).fill(0.1)] };
-          return makeSseStream('{"importance":2,"canonical":false,"kind":"episodic"}');
+          return makeSseStream('{"importance":2,"confidence":0.8,"canonical":false,"kind":"episodic"}');
         }),
       } as unknown as Ai,
     });

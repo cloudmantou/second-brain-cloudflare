@@ -138,4 +138,15 @@ describe("GET /list", () => {
     expect(v1.vector_ids).toBe('["v1"]');
     expect(v2.vector_ids).toBe("[]");
   });
+
+  it("returns no rows for a tag that would exceed D1's LIKE byte limit", async () => {
+    db.entries.push({
+      id: "safe", content: "Safe note", tags: '["work"]', source: "api",
+      created_at: 1000, vector_ids: "[]",
+    });
+    const longTag = "记".repeat(16);
+    const res = await worker.fetch(req("GET", `/list?tag=${encodeURIComponent(longTag)}`), env, ctx);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([]);
+  });
 });

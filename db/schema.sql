@@ -9,12 +9,22 @@ CREATE TABLE IF NOT EXISTS entries (
   vector_ids       TEXT NOT NULL DEFAULT '[]',   -- JSON array of Vectorize vector IDs
   recall_count         INTEGER DEFAULT 0,
   importance_score     INTEGER DEFAULT 0,
+  classification_confidence      REAL,
+  classification_status          TEXT NOT NULL DEFAULT 'pending',
+  classification_error           TEXT,
+  classification_attempts        INTEGER NOT NULL DEFAULT 0,
+  classification_next_attempt_at INTEGER,
+  classification_started_at      INTEGER,
+  classification_version         INTEGER NOT NULL DEFAULT 1,
+  classified_at                  INTEGER,
   contradiction_wins   INTEGER DEFAULT 0,
   contradiction_losses INTEGER DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_entries_created_at ON entries(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_entries_source ON entries(source);
+CREATE INDEX IF NOT EXISTS idx_entries_classification_queue
+  ON entries(classification_status, classification_next_attempt_at, created_at);
 
 CREATE TABLE IF NOT EXISTS sb_memory_relations (
   id             TEXT PRIMARY KEY,

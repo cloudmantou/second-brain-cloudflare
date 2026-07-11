@@ -8,7 +8,17 @@ import { D1Mock } from "../helpers/d1-mock";
 const ctx = { waitUntil: (_: Promise<any>) => {} } as any;
 
 function entry(id: string, tags: string[], importance: number) {
-  return { id, content: `Content ${id}`, tags: JSON.stringify(tags), source: "api", created_at: Date.now(), vector_ids: "[]", recall_count: 0, importance_score: importance };
+  return {
+    id,
+    content: `Content ${id}`,
+    tags: JSON.stringify(tags),
+    source: "api",
+    created_at: Date.now(),
+    vector_ids: "[]",
+    recall_count: 0,
+    importance_score: importance,
+    classification_status: tags.some(tag => tag.startsWith("kind:")) ? "succeeded" : "pending",
+  };
 }
 
 describe("GET /stats", () => {

@@ -13,6 +13,22 @@ function makeCtx() {
   };
 }
 
+function makeClassificationAI() {
+  return {
+    run: vi.fn().mockImplementation(async (model: string) => {
+      if (model === "@cf/baai/bge-small-en-v1.5") return { data: [new Array(384).fill(0.1)] };
+      return new ReadableStream({
+        start(controller) {
+          const response = '{"importance":4,"confidence":0.9,"canonical":false,"kind":"semantic"}';
+          controller.enqueue(new TextEncoder().encode(`data: {"response":${JSON.stringify(response)}}\n\n`));
+          controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+          controller.close();
+        },
+      });
+    }),
+  } as unknown as Ai;
+}
+
 describe("POST /capture", () => {
   let env: Env;
   let db: D1Mock;
@@ -23,6 +39,7 @@ describe("POST /capture", () => {
   });
 
   it("stores importance_score after async AI scoring completes", async () => {
+    env = makeTestEnv(db, { AI: makeClassificationAI() });
     const { ctx, drain } = makeCtx();
     const res = await worker.fetch(req("POST", "/capture", { body: { content: "Decided to switch to TypeScript for all new projects" } }), env, ctx);
     expect(res.status).toBe(200);

@@ -31,7 +31,7 @@ describe("kind tags", () => {
 
   describe("KIND_VALUES", () => {
     it("exports valid kind values", () => {
-      expect(KIND_VALUES).toEqual(["episodic", "semantic"]);
+      expect(KIND_VALUES).toEqual(["episodic", "semantic", "procedural"]);
     });
   });
 });
