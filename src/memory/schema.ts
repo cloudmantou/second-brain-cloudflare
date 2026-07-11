@@ -1,4 +1,7 @@
+import { ATOMIC_SCHEMA_STATEMENTS } from "./atomic";
+
 const MEMORY_SCHEMA_STATEMENTS = [
+  ...ATOMIC_SCHEMA_STATEMENTS,
   `CREATE TABLE IF NOT EXISTS sb_memory_relations (
     id TEXT PRIMARY KEY,
     from_memory_id TEXT NOT NULL,

@@ -4,6 +4,9 @@ export class D1Mock {
   entries: any[] = [];
   relations: any[] = [];
   revisions: any[] = [];
+  observations: any[] = [];
+  memories: any[] = [];
+  memorySources: any[] = [];
   statementCount = 0;
   execCount = 0;
   beforeClassificationCommit?: (row: any) => boolean | void;
@@ -27,6 +30,31 @@ export class D1Mock {
     const makeStmt = (args: any[]) => ({
       async run() {
         db.statementCount += 1;
+        
+        if (s.startsWith("INSERT INTO sb_observations")) {
+          const [id, content, source, metadata_json, created_at] = args;
+          db.observations.push({ id, content, source, metadata_json, created_at });
+          return { meta: { changes: 1 } };
+        }
+        if (s.startsWith("INSERT INTO sb_memories")) {
+          const [
+            id, content, kind, memory_class, importance, confidence,
+            entry_id, content_hash, observed_at, valid_from, valid_to,
+            entities_json, created_at,
+          ] = args;
+          db.memories.push({
+            id, content, kind, memory_class, importance, confidence,
+            entry_id, content_hash, observed_at, valid_from, valid_to,
+            entities_json, created_at,
+          });
+          return { meta: { changes: 1 } };
+        }
+        if (s.startsWith("INSERT INTO sb_memory_sources")) {
+          const [id, memory_id, observation_id, role, score, created_at] = args;
+          db.memorySources.push({ id, memory_id, observation_id, role, score, created_at });
+          return { meta: { changes: 1 } };
+        }
+
         if (s.startsWith("INSERT INTO sb_memory_relations")) {
           const [id, from_memory_id, to_memory_id, relation_type, score, metadata_json, created_at] = args;
           db.relations.push({ id, from_memory_id, to_memory_id, relation_type, score, metadata_json, created_at });
@@ -105,10 +133,18 @@ export class D1Mock {
               content_hash: content_hash ?? null,
             });
           } else if (s.includes("content_hash") && args.length >= 7) {
-            const [id, content, tags, source, created_at, vector_ids, content_hash] = args;
+            const hasImportance = s.includes("importance_score") || args.length >= 8;
+            const id = args[0];
+            const content = args[1];
+            const tags = args[2];
+            const source = args[3];
+            const created_at = args[4];
+            const vector_ids = args[5];
+            const content_hash = args[6];
+            const importance_score = hasImportance && args.length >= 8 ? args[7] : 0;
             const row = {
               id, content, tags, source, created_at, vector_ids,
-              recall_count: 0, importance_score: 0,
+              recall_count: 0, importance_score: importance_score ?? 0,
               contradiction_wins: 0, contradiction_losses: 0,
               content_hash,
             };
@@ -434,6 +470,26 @@ export class D1Mock {
           const [id] = args;
           const row = db.entries.find((e: any) => e.id === id);
           if (row) row.recall_count = (row.recall_count ?? 0) + 1;
+          return { meta: { changes: row ? 1 : 0 } };
+        }
+        if (s.startsWith("UPDATE entries SET importance_score = ?, classification_confidence")) {
+          const [
+            importance_score, classification_confidence, classification_version, classified_at, id,
+          ] = args;
+          const row = db.entries.find((e: any) => e.id === id);
+          if (row) {
+            Object.assign(row, {
+              importance_score,
+              classification_confidence,
+              classification_status: "succeeded",
+              classification_error: null,
+              classification_attempts: 1,
+              classification_next_attempt_at: null,
+              classification_started_at: null,
+              classification_version,
+              classified_at,
+            });
+          }
           return { meta: { changes: row ? 1 : 0 } };
         }
         if (s.startsWith("UPDATE entries SET importance_score")) {
@@ -934,5 +990,8 @@ export class D1Mock {
     this.entries = [];
     this.relations = [];
     this.revisions = [];
+    this.observations = [];
+    this.memories = [];
+    this.memorySources = [];
   }
 }
