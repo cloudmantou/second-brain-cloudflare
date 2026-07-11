@@ -60,3 +60,45 @@ CREATE TABLE IF NOT EXISTS sb_memory_revisions (
 
 CREATE INDEX IF NOT EXISTS idx_sb_memory_revisions_memory
   ON sb_memory_revisions(memory_id, created_at ASC);
+
+-- Atomic memory layer (Observation → Memory → Source)
+CREATE TABLE IF NOT EXISTS sb_observations (
+  id TEXT PRIMARY KEY,
+  content TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'api',
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sb_observations_created
+  ON sb_observations(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS sb_memories (
+  id TEXT PRIMARY KEY,
+  content TEXT NOT NULL,
+  kind TEXT,
+  memory_class TEXT,
+  importance REAL,
+  confidence REAL,
+  entry_id TEXT,
+  content_hash TEXT,
+  observed_at INTEGER,
+  valid_from INTEGER,
+  valid_to INTEGER,
+  entities_json TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sb_memories_entry ON sb_memories(entry_id);
+CREATE INDEX IF NOT EXISTS idx_sb_memories_hash ON sb_memories(content_hash);
+CREATE INDEX IF NOT EXISTS idx_sb_memories_created ON sb_memories(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS sb_memory_sources (
+  id TEXT PRIMARY KEY,
+  memory_id TEXT NOT NULL,
+  observation_id TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'derived_from',
+  score REAL,
+  created_at INTEGER NOT NULL,
+  UNIQUE(memory_id, observation_id, role)
+);
+CREATE INDEX IF NOT EXISTS idx_sb_memory_sources_memory ON sb_memory_sources(memory_id);
+CREATE INDEX IF NOT EXISTS idx_sb_memory_sources_observation ON sb_memory_sources(observation_id);

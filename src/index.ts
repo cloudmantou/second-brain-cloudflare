@@ -82,6 +82,15 @@ import {
   prepareMemoryRevision,
   type MemoryRevisionEvent,
 } from "./memory/revisions";
+import {
+  buildAtomicExtractionPrompt,
+  parseAtomicExtraction,
+  prepareAtomicMemoryInsert,
+  prepareMemorySourceInsert,
+  prepareObservationInsert,
+  ATOMIC_EXTRACTION_MAX_TOKENS,
+  type AtomicFactDraft,
+} from "./memory/atomic";
 
 export interface Env {
   DB: D1Database;
@@ -1746,14 +1755,16 @@ If no genuine pattern exists across 3+ memories, respond with exactly: NONE`;
       ["auto-pattern", "kind:semantic", "status:draft"],
       "system",
       env,
-      ctx
+      ctx,
+      { skipExtract: true }
     );
-    if (result.status === "blocked") return;
+    const patternId = captureResultEntryIds(result)[0];
+    if (!patternId) return;
 
     await createMemoryRelations(
       env.DB,
       sample.map(row => ({
-        fromMemoryId: result.id,
+        fromMemoryId: patternId,
         toMemoryId: row.id,
         relationType: "derived_from",
         metadata: { automatic: true, derived_type: "pattern" },
@@ -1847,15 +1858,18 @@ export async function compressTag(
   if (!text) return { synthesizedId: null, entriesUsed: 0, text: "" };
 
   const content = `[Synthesized from ${rows.length} entries tagged "${tag}"]\n\n${text}`;
-  const result = await captureEntry(content, ["synthesized", tag], "system", env, ctx);
+  const result = await captureEntry(content, ["synthesized", tag], "system", env, ctx, {
+    skipExtract: true,
+  });
 
-  if (result.status === "blocked") {
+  const digestId = captureResultEntryIds(result)[0];
+  if (!digestId) {
     return { synthesizedId: null, entriesUsed: 0, text };
   }
 
   const digestRelations = rows.map(row =>
     prepareMemoryRelation(env.DB, {
-      fromMemoryId: result.id,
+      fromMemoryId: digestId,
       toMemoryId: row.id,
       relationType: "digest_of",
       metadata: { automatic: true, derived_type: "digest", tag },
@@ -1873,7 +1887,7 @@ export async function compressTag(
       oldContent: row.content,
       newContent: row.content,
       oldMetadata: { tags: row.tags },
-      newMetadata: { tags: nextTags, digestId: result.id },
+      newMetadata: { tags: nextTags, digestId },
       reason: `Included in digest for tag ${tag}`,
       actor: "system",
     })
@@ -1887,7 +1901,7 @@ export async function compressTag(
     ...rollupRevisions.map(item => item.statement),
   ]);
 
-  return { synthesizedId: result.id, entriesUsed: rows.length, text };
+  return { synthesizedId: digestId, entriesUsed: rows.length, text };
 }
 
 async function runNightlyCompression(env: Env, ctx: ExecutionContext): Promise<void> {
@@ -2584,13 +2598,70 @@ function scheduleClassifyAndTag(
   );
 }
 
-export type CaptureResult =
+export type CaptureSingleResult =
   | { status: "blocked"; matchId: string; score: number }
   | { status: "stored"; id: string }
   | { status: "flagged"; id: string; matchId: string; score: number }
   | { status: "linked"; id: string; linkedId: string; relation: MemoryRelationType; score: number }
   | { status: "contradiction"; id: string; conflictId: string; reason?: string }
   | { status: "contradiction_protected"; id: string; canonicalId: string; reason?: string };
+
+export type CaptureResult =
+  | CaptureSingleResult
+  | {
+      status: "batch";
+      observationId: string;
+      results: CaptureSingleResult[];
+    };
+
+export interface CaptureOptions {
+  /** Skip LLM atomic fact extraction (already a single fact or system write). */
+  skipExtract?: boolean;
+  /** Dual-write sb_memories/sb_memory_sources against this observation. */
+  observationId?: string;
+  /** Fields produced by the atomic extractor. */
+  atomic?: AtomicFactDraft;
+}
+
+export function captureResultEntryIds(result: CaptureResult): string[] {
+  if (result.status === "batch") {
+    return result.results.flatMap((item) => ("id" in item ? [item.id] : []));
+  }
+  if ("id" in result) return [result.id];
+  return [];
+}
+
+export function formatCaptureResultMessage(result: CaptureResult): string {
+  if (result.status === "blocked") {
+    return `Duplicate detected — not stored. Existing entry ID: ${result.matchId}`;
+  }
+  if (result.status === "batch") {
+    const ids = captureResultEntryIds(result);
+    if (!ids.length) {
+      return `Observation ${result.observationId} produced no new memories (all exact duplicates).`;
+    }
+    return (
+      `Stored ${ids.length} atomic memories from observation ${result.observationId}.\n` +
+      ids.map((id, i) => `${i + 1}. ${id}`).join("\n")
+    );
+  }
+  if (result.status === "contradiction") {
+    return `Stored as a new memory. ID: ${result.id} — linked as contradicting entry ${result.conflictId}; both original observations were preserved${result.reason ? `: ${result.reason}` : ""}.`;
+  }
+  if (result.status === "contradiction_protected") {
+    return `Stored as draft (ID: ${result.id}) — linked as contradicting canonical memory ${result.canonicalId}; both observations were preserved${result.reason ? `: ${result.reason}` : ""}.`;
+  }
+  if (result.status === "linked") {
+    return `Stored as a new memory (ID: ${result.id}) and linked to ${result.linkedId} with relation ${result.relation}. The existing memory was preserved.`;
+  }
+  if (result.status === "flagged") {
+    return `Stored with ID: ${result.id} — note: similar entry exists (ID: ${result.matchId}). Tagged as duplicate-candidate.`;
+  }
+  if (result.status === "stored") {
+    return `Stored. ID: ${result.id}`;
+  }
+  return "Stored.";
+}
 
 interface CaptureRelationPlan {
   toMemoryId: string;
@@ -2656,23 +2727,90 @@ async function planCaptureRelation(
   };
 }
 
-export async function captureEntry(
+export async function extractAtomicFacts(content: string, env: Env): Promise<AtomicFactDraft[]> {
+  let text: string;
+  try {
+    text = await (await createLLM(env)).chat(
+      [{ role: "user", content: buildAtomicExtractionPrompt(content) }],
+      { max_tokens: ATOMIC_EXTRACTION_MAX_TOKENS }
+    );
+  } catch {
+    throw new Error("provider_error");
+  }
+  return parseAtomicExtraction(text);
+}
+
+function atomicTagsFromDraft(baseTags: string[], draft: AtomicFactDraft | undefined): string[] {
+  let tags = [...baseTags];
+  if (draft?.kind) tags = withKind(tags, draft.kind);
+  if (draft?.memoryClass) {
+    const classTag = `class:${draft.memoryClass}`;
+    if (!tags.includes(classTag) && isD1SafeTag(classTag)) tags = [...tags, classTag];
+  }
+  return tags;
+}
+
+async function dualWriteAtomicMemory(
+  env: Env,
+  input: {
+    entryId: string;
+    content: string;
+    contentHash: string;
+    observationId: string;
+    atomic?: AtomicFactDraft;
+    createdAt: number;
+  }
+): Promise<void> {
+  const memoryId = crypto.randomUUID();
+  try {
+    await env.DB.batch([
+      prepareAtomicMemoryInsert(env.DB, {
+        id: memoryId,
+        content: input.content,
+        kind: input.atomic?.kind ?? null,
+        memoryClass: input.atomic?.memoryClass ?? null,
+        importance: input.atomic?.importance ?? null,
+        confidence: input.atomic?.confidence ?? null,
+        entryId: input.entryId,
+        contentHash: input.contentHash,
+        observedAt: input.atomic?.observedAt ?? input.createdAt,
+        validFrom: input.atomic?.validFrom ?? null,
+        validTo: input.atomic?.validTo ?? null,
+        entitiesJson: JSON.stringify(input.atomic?.entities ?? []),
+        createdAt: input.createdAt,
+      }),
+      prepareMemorySourceInsert(env.DB, {
+        id: crypto.randomUUID(),
+        memoryId,
+        observationId: input.observationId,
+        role: "derived_from",
+        score: input.atomic?.confidence ?? null,
+        createdAt: input.createdAt,
+      }),
+    ]);
+  } catch (e) {
+    console.error("Atomic memory dual-write failed (non-fatal):", e);
+  }
+}
+
+/** Persist one atomic fact into legacy entries (+ optional sb_memories dual-write). */
+async function captureSingleFact(
   rawContent: string,
   tags: string[],
   source: string,
   env: Env,
-  ctx: ExecutionContext
-): Promise<CaptureResult> {
+  ctx: ExecutionContext,
+  options: CaptureOptions = {}
+): Promise<CaptureSingleResult> {
   const raw = rawContent.trim();
   const { cleanContent, hashtags } = extractHashtags(raw);
   const c = cleanContent || raw;
-  const t = [...new Set([
+  let t = [...new Set([
     ...tags.map(tag => tag.toLowerCase()).filter(isD1SafeTag),
     ...hashtags,
   ])];
+  t = atomicTagsFromDraft(t, options.atomic);
 
-  // Hard dedup only for identical content fingerprints (normalized whitespace).
-  // Semantic near-duplicates always proceed to ADD + typed relations.
   const contentHash = await contentFingerprint(c);
   const exactId = await findExactDuplicateId(env, c, contentHash);
   if (exactId) {
@@ -2681,7 +2819,6 @@ export async function captureEntry(
 
   const { duplicate: dup, contradiction, mergeAction } = await checkDuplicateAndContradiction(c, env);
 
-  // Vector scores never return blocked after PR-5; keep guard for safety.
   if (dup.status === "blocked") {
     return { status: "blocked", matchId: dup.matchId, score: dup.score };
   }
@@ -2697,15 +2834,23 @@ export async function captureEntry(
     finalTags = withStatusSource(finalTags, "relation");
   }
 
+  // Prefer extractor scores when present so scheduleClassify can still refine later.
+  const importanceSeed = options.atomic?.importance ?? 0;
+
   const insertStatement = env.DB.prepare(
-    `INSERT INTO entries (id, content, tags, source, created_at, vector_ids, content_hash)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).bind(id, c, JSON.stringify(finalTags), source, now, "[]", contentHash);
+    `INSERT INTO entries (id, content, tags, source, created_at, vector_ids, content_hash, importance_score)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, c, JSON.stringify(finalTags), source, now, "[]", contentHash, importanceSeed);
   const revision = prepareMemoryRevision(env.DB, {
     memoryId: id,
     eventType: "ADD",
     newContent: c,
-    newMetadata: { tags: finalTags, source },
+    newMetadata: {
+      tags: finalTags,
+      source,
+      memory_class: options.atomic?.memoryClass ?? null,
+      observation_id: options.observationId ?? null,
+    },
     actor: source,
     createdAt: now,
   });
@@ -2722,7 +2867,23 @@ export async function captureEntry(
   }
   await env.DB.batch(statements);
 
-  logMemoryEvent(id, "created", { source, tags: finalTags }, source);
+  if (options.observationId) {
+    await dualWriteAtomicMemory(env, {
+      entryId: id,
+      content: c,
+      contentHash,
+      observationId: options.observationId,
+      atomic: options.atomic,
+      createdAt: now,
+    });
+  }
+
+  logMemoryEvent(id, "created", {
+    source,
+    tags: finalTags,
+    observation_id: options.observationId ?? null,
+    memory_class: options.atomic?.memoryClass ?? null,
+  }, source);
   if (relationPlan) {
     logMemoryEvent(id, "linked", {
       to_memory_id: relationPlan.toMemoryId,
@@ -2737,7 +2898,58 @@ export async function captureEntry(
       .catch(e => console.error("Vectorize insert failed (non-fatal):", e))
   );
 
-  scheduleClassifyAndTag(id, c, env, ctx);
+  // Skip async classify when extractor already provided kind + scores.
+  if (!options.atomic?.kind) {
+    scheduleClassifyAndTag(id, c, env, ctx);
+  } else if (options.atomic.kind) {
+    // Persist extractor kind immediately already in tags; still queue classify for confidence refresh
+    // only when confidence missing.
+    if (options.atomic.confidence == null) {
+      scheduleClassifyAndTag(id, c, env, ctx);
+    } else {
+      // Mark classification succeeded with extractor fields (no extra LLM).
+      try {
+        await env.DB.prepare(
+          `UPDATE entries
+           SET importance_score = ?, classification_confidence = ?,
+               classification_status = 'succeeded', classification_error = NULL,
+               classification_attempts = 1, classification_next_attempt_at = NULL,
+               classification_started_at = NULL, classification_version = ?,
+               classified_at = ?
+           WHERE id = ?`
+        ).bind(
+          options.atomic.importance ?? 3,
+          options.atomic.confidence,
+          CURRENT_CLASSIFICATION_VERSION,
+          now,
+          id
+        ).run();
+        const classifyRevision = prepareMemoryRevision(env.DB, {
+          memoryId: id,
+          eventType: "CLASSIFY",
+          oldContent: c,
+          newContent: c,
+          oldMetadata: { tags: finalTags },
+          newMetadata: {
+            tags: finalTags,
+            importance: options.atomic.importance,
+            confidence: options.atomic.confidence,
+            kind: options.atomic.kind,
+            memory_class: options.atomic.memoryClass,
+            classification_version: CURRENT_CLASSIFICATION_VERSION,
+            source: "atomic_extractor",
+          },
+          reason: "Atomic extraction classification",
+          actor: "extractor",
+          createdAt: now,
+        });
+        await classifyRevision.statement.run();
+      } catch (e) {
+        console.error("Extractor classification persist failed (non-fatal):", e);
+        scheduleClassifyAndTag(id, c, env, ctx);
+      }
+    }
+  }
 
   if (contradiction.detected && contradiction.conflicting_id) {
     const conflictId = contradiction.conflicting_id;
@@ -2747,11 +2959,9 @@ export async function captureEntry(
     const conflictStatus = conflictRow ? getStatus(JSON.parse(conflictRow.tags ?? "[]")) : null;
 
     if (conflictStatus === "canonical") {
-      // Don't overwrite a canonical memory — keep it, demote the new entry to draft.
-      // Strip "contradiction-resolved" — that tag marks entries that WON a contradiction;
-      // this entry lost, so it must not carry that tag.
       const draftTags = finalTags.filter(t => t !== "contradiction-resolved");
-      const nextTags = withStatus(draftTags, "draft");
+      let nextTags = withStatus(draftTags, "draft");
+      nextTags = withStatusSource(nextTags, "relation");
       const statusRevision = prepareMemoryRevision(env.DB, {
         memoryId: id,
         eventType: "STATUS",
@@ -2767,8 +2977,6 @@ export async function captureEntry(
           .bind(JSON.stringify(nextTags), id),
         statusRevision.statement,
       ]);
-      // Record the outcome: canonical incumbent survived (win), new draft lost (loss).
-      // Non-fatal — a failed count update must not abort capture.
       try {
         await env.DB.prepare(`UPDATE entries SET contradiction_wins = contradiction_wins + 1 WHERE id = ?`).bind(conflictId).run();
         await env.DB.prepare(`UPDATE entries SET contradiction_losses = contradiction_losses + 1 WHERE id = ?`).bind(id).run();
@@ -2778,8 +2986,6 @@ export async function captureEntry(
       return { status: "contradiction_protected", id, canonicalId: conflictId, reason: contradiction.reason };
     }
 
-    // Preserve both facts. The relation and counters express the conflict without
-    // rewriting or hiding the older observation.
     try {
       await env.DB.prepare(`UPDATE entries SET contradiction_wins = contradiction_wins + 1 WHERE id = ?`).bind(id).run();
       await env.DB.prepare(`UPDATE entries SET contradiction_losses = contradiction_losses + 1 WHERE id = ?`).bind(conflictId).run();
@@ -2804,6 +3010,120 @@ export async function captureEntry(
   }
 
   return { status: "stored", id };
+}
+
+/**
+ * Capture entry with Observation → Atomic Memory dual-write.
+ * Multi-claim inputs are split via one LLM call; each fact becomes its own entry.
+ */
+export async function captureEntry(
+  rawContent: string,
+  tags: string[],
+  source: string,
+  env: Env,
+  ctx: ExecutionContext,
+  options: CaptureOptions = {}
+): Promise<CaptureResult> {
+  const raw = rawContent.trim();
+  const { cleanContent, hashtags } = extractHashtags(raw);
+  const c = cleanContent || raw;
+  const baseTags = [...new Set([
+    ...tags.map(tag => tag.toLowerCase()).filter(isD1SafeTag),
+    ...hashtags,
+  ])];
+
+  const systemLike =
+    source === "system" ||
+    baseTags.includes("synthesized") ||
+    baseTags.includes("auto-pattern");
+  const shouldExtract = !options.skipExtract && !systemLike && c.length >= 8;
+
+  // Exact whole-input fingerprint check before spending an extraction LLM call.
+  if (!options.skipExtract) {
+    const wholeHash = await contentFingerprint(c);
+    const exactId = await findExactDuplicateId(env, c, wholeHash);
+    if (exactId) {
+      return { status: "blocked", matchId: exactId, score: 1 };
+    }
+  }
+
+  if (!shouldExtract) {
+    return captureSingleFact(c, baseTags, source, env, ctx, {
+      ...options,
+      skipExtract: true,
+    });
+  }
+
+  const observationId = crypto.randomUUID();
+  const observedAt = Date.now();
+  try {
+    await prepareObservationInsert(env.DB, {
+      id: observationId,
+      content: c,
+      source,
+      metadata: { tags: baseTags },
+      createdAt: observedAt,
+    }).run();
+  } catch (e) {
+    console.error("Observation insert failed; falling back to single capture:", e);
+    return captureSingleFact(c, baseTags, source, env, ctx, { skipExtract: true });
+  }
+
+  let facts: AtomicFactDraft[];
+  try {
+    facts = await extractAtomicFacts(c, env);
+  } catch (e) {
+    console.error("Atomic extraction failed (fallback to whole input):", e);
+    facts = [{
+      content: c,
+      kind: null,
+      memoryClass: null,
+      importance: null,
+      confidence: null,
+      observedAt,
+      validFrom: null,
+      validTo: null,
+      entities: [],
+    }];
+  }
+
+  // Single-fact path: one dual-written entry linked to the observation.
+  if (facts.length <= 1) {
+    const draft = facts[0] ?? {
+      content: c,
+      kind: null,
+      memoryClass: null,
+      importance: null,
+      confidence: null,
+      observedAt,
+      validFrom: null,
+      validTo: null,
+      entities: [],
+    };
+    return captureSingleFact(draft.content || c, baseTags, source, env, ctx, {
+      skipExtract: true,
+      observationId,
+      atomic: draft,
+    });
+  }
+
+  const results: CaptureSingleResult[] = [];
+  for (const draft of facts) {
+    const result = await captureSingleFact(draft.content, baseTags, source, env, ctx, {
+      skipExtract: true,
+      observationId,
+      atomic: draft,
+    });
+    results.push(result);
+  }
+
+  // If every fact was an exact duplicate, surface a single blocked outcome.
+  if (results.length && results.every(r => r.status === "blocked")) {
+    const first = results[0];
+    if (first.status === "blocked") return first;
+  }
+
+  return { status: "batch", observationId, results };
 }
 
 // ─── Shared delete path ───────────────────────────────────────────────────────
@@ -2906,22 +3226,7 @@ function buildMcpServer(env: Env, ctx: ExecutionContext): McpServer {
     },
     async ({ content, tags, source }) => {
       const result = await captureEntry(content, tags ?? [], source ?? "claude", env, ctx);
-      if (result.status === "blocked") {
-        return { content: [{ type: "text", text: `Duplicate detected (${(result.score * 100).toFixed(0)}% match) — not stored. Existing entry ID: ${result.matchId}` }] };
-      }
-      if (result.status === "contradiction") {
-        return { content: [{ type: "text", text: `Stored as a new memory. ID: ${result.id} — linked as contradicting entry ${result.conflictId}; both original observations were preserved${result.reason ? `: ${result.reason}` : ""}.` }] };
-      }
-      if (result.status === "contradiction_protected") {
-        return { content: [{ type: "text", text: `Stored as draft (ID: ${result.id}) — linked as contradicting canonical memory ${result.canonicalId}; both observations were preserved${result.reason ? `: ${result.reason}` : ""}.` }] };
-      }
-      if (result.status === "linked") {
-        return { content: [{ type: "text", text: `Stored as a new memory (ID: ${result.id}) and linked to ${result.linkedId} with relation ${result.relation}. The existing memory was preserved.` }] };
-      }
-      if (result.status === "flagged") {
-        return { content: [{ type: "text", text: `Stored with ID: ${result.id} — note: similar entry exists (${(result.score * 100).toFixed(0)}% match, ID: ${result.matchId}). Tagged as duplicate-candidate.` }] };
-      }
-      return { content: [{ type: "text", text: `Stored. ID: ${result.id}` }] };
+      return { content: [{ type: "text", text: formatCaptureResultMessage(result) }] };
     }
   );
 
@@ -3448,7 +3753,23 @@ const defaultHandler = {
           duplicate: true,
           matchId: result.matchId,
           score: parseFloat((result.score * 100).toFixed(1)),
-          message: "Near-exact duplicate detected — not stored",
+          message: "Exact duplicate detected — not stored",
+        });
+      }
+      if (result.status === "batch") {
+        const ids = captureResultEntryIds(result);
+        return json({
+          ok: true,
+          observation_id: result.observationId,
+          ids,
+          id: ids[0] ?? null,
+          count: ids.length,
+          results: result.results.map((item) => ({
+            status: item.status,
+            id: "id" in item ? item.id : undefined,
+            matchId: "matchId" in item ? item.matchId : undefined,
+          })),
+          message: formatCaptureResultMessage(result),
         });
       }
       if (result.status === "contradiction") {
