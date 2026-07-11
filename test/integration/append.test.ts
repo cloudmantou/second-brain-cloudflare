@@ -44,6 +44,8 @@ describe("POST /append", () => {
       source: "api",
       created_at: Date.now(),
       vector_ids: "[]",
+      classification_status: "succeeded",
+      classification_confidence: 0.9,
     });
 
     const res = await worker.fetch(
@@ -56,6 +58,8 @@ describe("POST /append", () => {
     expect(data.ok).toBe(true);
     expect(db.entries[0].content).toContain("Original content");
     expect(db.entries[0].content).toContain("New info");
+    expect(db.entries[0].classification_status).not.toBe("succeeded");
+    expect(db.entries[0].classification_confidence).toBeNull();
     expect(db.revisions).toContainEqual(
       expect.objectContaining({
         memory_id: "entry-1",

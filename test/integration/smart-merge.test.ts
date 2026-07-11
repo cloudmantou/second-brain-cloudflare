@@ -113,7 +113,7 @@ describe("POST /capture — similarity decision guardrails", () => {
       }),
       AI: makePromptAwareAI(
         '{"action":"replace","target_id":"existing-id"}',
-        '{"importance":2,"canonical":false,"kind":"semantic"}'
+        '{"importance":2,"confidence":0.8,"canonical":false,"kind":"semantic"}'
       ),
     });
     const { ctx, drain } = makeCtx();
@@ -142,7 +142,7 @@ describe("POST /capture — similarity decision guardrails", () => {
       }),
       AI: makePromptAwareAI(
         '{"action":"merge","target_id":"existing-id","merged_content":"ignored"}',
-        '{"importance":4,"canonical":false,"kind":"semantic"}'
+        '{"importance":4,"confidence":0.9,"canonical":false,"kind":"semantic"}'
       ),
     });
     const { ctx, drain } = makeCtx();

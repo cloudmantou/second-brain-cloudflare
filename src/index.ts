@@ -190,6 +190,10 @@ const D1_MAX_BOUND_PARAMS = 100;
 const RRF_K = 60;                    // Reciprocal Rank Fusion dampening constant
 const KEYWORD_CANDIDATE_LIMIT = 100; // max rows the LIKE keyword query scans
 const KEYWORD_MIN_TOKEN_LEN = 2;     // ignore 1-char tokens
+const KEYWORD_MAX_TOKENS = 24;       // well below D1's 100 bound-parameter limit
+const KEYWORD_MAX_LIKE_TOKEN_BYTES = 48; // + two '%' wildcards = D1's 50-byte limit
+const KEYWORD_MAX_QUERY_CHARS = 2_048;
+const D1_MAX_TAG_UTF8_BYTES = 46; // JSON tag LIKE pattern adds %" and "% (4 bytes)
 const KEYWORD_STOPWORDS = new Set([
   "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "is", "are", "was", "were", "be", "been",
   "i", "me", "my", "we", "you", "it", "this", "that", "these", "those", "with", "about", "from", "at", "as", "by",
@@ -220,7 +224,7 @@ export function withStatus(tags: string[], status: MemoryStatus): string[] {
 // Kind lives as a reserved tag (e.g. "kind:episodic") on entries.tags — no schema
 // change. Absent kind = unknown (unclassified). Orthogonal to status (#119).
 
-export const KIND_VALUES = ["episodic", "semantic"] as const;
+export const KIND_VALUES = ["episodic", "semantic", "procedural"] as const;
 export type MemoryKind = (typeof KIND_VALUES)[number];
 const KIND_PREFIX = "kind:";
 
@@ -432,11 +436,56 @@ export async function initializeDatabase(env: Env): Promise<void> {
   for (const alter of [
     `ALTER TABLE entries ADD COLUMN recall_count INTEGER DEFAULT 0`,
     `ALTER TABLE entries ADD COLUMN importance_score INTEGER DEFAULT 0`,
+    `ALTER TABLE entries ADD COLUMN classification_confidence REAL`,
+    `ALTER TABLE entries ADD COLUMN classification_status TEXT NOT NULL DEFAULT 'pending'`,
+    `ALTER TABLE entries ADD COLUMN classification_error TEXT`,
+    `ALTER TABLE entries ADD COLUMN classification_attempts INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE entries ADD COLUMN classification_next_attempt_at INTEGER`,
+    `ALTER TABLE entries ADD COLUMN classification_started_at INTEGER`,
+    `ALTER TABLE entries ADD COLUMN classification_version INTEGER NOT NULL DEFAULT 1`,
+    `ALTER TABLE entries ADD COLUMN classified_at INTEGER`,
     `ALTER TABLE entries ADD COLUMN contradiction_wins INTEGER DEFAULT 0`,
     `ALTER TABLE entries ADD COLUMN contradiction_losses INTEGER DEFAULT 0`,
   ]) {
-    try { await env.DB.exec(alter); } catch { /* column already exists — no-op */ }
+    try {
+      await env.DB.exec(alter);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/duplicate column name|already exists/i.test(message)) throw error;
+    }
   }
+  await env.DB.exec(
+    `CREATE INDEX IF NOT EXISTS idx_entries_classification_queue
+     ON entries(classification_status, classification_next_attempt_at, created_at)`
+  );
+  // Before durable classification fields existed, kind:* tags were the only
+  // successful-classification marker. Preserve that work during upgrade with
+  // a conservative confidence instead of re-spending the classifier on it.
+  await env.DB.exec(
+    `UPDATE entries
+     SET classification_status = 'succeeded',
+         classification_confidence = 0.5,
+         classification_attempts = 1,
+         classification_error = NULL,
+         classification_next_attempt_at = NULL,
+         classification_started_at = NULL,
+         classification_version = 1,
+         classified_at = created_at
+     WHERE classification_status = 'pending'
+       AND COALESCE(classification_attempts, 0) = 0
+       AND classification_confidence IS NULL
+       AND classified_at IS NULL
+       AND (
+         SELECT COUNT(*)
+         FROM json_each(CASE WHEN json_valid(entries.tags) THEN entries.tags ELSE '[]' END)
+         WHERE value LIKE 'kind:%'
+       ) = 1
+       AND EXISTS (
+         SELECT 1
+         FROM json_each(CASE WHEN json_valid(entries.tags) THEN entries.tags ELSE '[]' END)
+         WHERE value IN ('kind:episodic', 'kind:semantic', 'kind:procedural')
+       )`
+  );
   await ensureMemoryDataModel(env.DB);
   await ensureSettingsTable(env.DB);
   await ensureTelemetryTables(env.DB);
@@ -847,37 +896,81 @@ export function parseTimePhrase(query: string, now: number): { after?: number; b
 function normalizeKind(raw: unknown): MemoryKind | null {
   if (typeof raw !== "string") return null;
   const v = raw.trim().toLowerCase();
-  if (/episod|event|decision|milestone|occurrence/.test(v)) return "episodic";
-  if (/semantic|fact|preference|knowledge|belief/.test(v)) return "semantic";
+  if (["episodic", "episodic event", "event", "decision", "milestone", "occurrence"].includes(v)) return "episodic";
+  if (["semantic", "fact", "preference", "knowledge", "belief"].includes(v)) return "semantic";
+  if (["procedural", "procedure", "workflow", "how-to", "how to", "process"].includes(v)) return "procedural";
   return null;
 }
 
 // Parse the classifier's response. Tries strict JSON first, then falls back to
 // tolerant per-field extraction so one malformed field (small models intermittently
 // emit e.g. {"canonical":,}) doesn't discard the other valid fields.
-function parseClassification(text: string): { importance: number; canonical: boolean; kind: MemoryKind | null } {
+export interface EntryClassification {
+  importance: number;
+  confidence: number;
+  canonical: boolean;
+  kind: MemoryKind;
+}
+
+const CLASSIFICATION_SAMPLE_MAX_CHARS = 6_000;
+const CLASSIFICATION_MAX_ATTEMPTS = 3;
+const CLASSIFICATION_SELFHOST_BATCH_LIMIT = 14;
+const CLASSIFICATION_CLOUDFLARE_BATCH_LIMIT = 1;
+const CLOUDFLARE_IMPORT_MAX_ROWS = 4;
+const CLASSIFICATION_RETRY_BASE_MS = 60_000;
+const CLASSIFICATION_PROCESSING_LEASE_MS = 10 * 60_000;
+
+export function getClassificationSample(content: string): string {
+  if (content.length <= CLASSIFICATION_SAMPLE_MAX_CHARS) return content;
+  const head = content.slice(0, 2_500);
+  const middleStart = Math.max(2_500, Math.floor(content.length / 2) - 500);
+  const middle = content.slice(middleStart, middleStart + 1_000);
+  const tail = content.slice(-2_500);
+  return `${head}\n[...middle...]\n${middle}\n[...end...]\n${tail}`;
+}
+
+function normalizeConfidence(raw: unknown): number | null {
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0 || raw > 1) return null;
+  return raw;
+}
+
+function parseClassification(text: string): EntryClassification {
   const obj = text.match(/\{[^{}]*\}/);
   if (obj) {
     try {
       const p = JSON.parse(obj[0]);
+      const importance = Number.isInteger(p.importance) && p.importance >= 1 && p.importance <= 5
+        ? p.importance
+        : null;
+      const confidence = normalizeConfidence(p.confidence);
+      const kind = normalizeKind(p.kind);
+      if (importance === null || confidence === null || typeof p.canonical !== "boolean" || kind === null) {
+        throw new Error("invalid_response");
+      }
       return {
-        importance: p.importance >= 1 && p.importance <= 5 ? p.importance : 3,
-        canonical: p.canonical === true,
-        kind: normalizeKind(p.kind),
+        importance,
+        confidence,
+        canonical: p.canonical,
+        kind,
       };
     } catch { /* fall through to tolerant extraction */ }
   }
-  const imp = text.match(/"importance"\s*:\s*([1-5])/);
-  const can = text.match(/"canonical"\s*:\s*(true|false)/i);
-  const knd = text.match(/"kind"\s*:\s*"?([a-zA-Z]+)/);
+  const imp = text.match(/"importance"\s*:\s*([1-5])(?=\s*[,}])/);
+  const conf = text.match(/"confidence"\s*:\s*(0(?:\.\d+)?|1(?:\.0+)?)(?=\s*[,}])/);
+  const can = text.match(/"canonical"\s*:\s*(true|false)(?=\s*[,}])/i);
+  const knd = text.match(/"kind"\s*:\s*"([^"]+)"/);
+  const kind = knd ? normalizeKind(knd[1]) : null;
+  const confidence = conf ? normalizeConfidence(Number(conf[1])) : null;
+  if (!imp || confidence === null || !can || kind === null) throw new Error("invalid_response");
   return {
-    importance: imp ? parseInt(imp[1], 10) : 3,
+    importance: parseInt(imp[1], 10),
+    confidence,
     canonical: can ? can[1].toLowerCase() === "true" : false,
-    kind: knd ? normalizeKind(knd[1]) : null,
+    kind,
   };
 }
 
-export async function classifyEntry(content: string, env: Env): Promise<{ importance: number; canonical: boolean; kind: MemoryKind | null }> {
+export async function classifyEntry(content: string, env: Env): Promise<EntryClassification> {
   let text: string;
   try {
     text = await (await createLLM(env)).chat(
@@ -885,16 +978,18 @@ export async function classifyEntry(content: string, env: Env): Promise<{ import
         role: "user",
         content:
           `Classify this memory. Respond with ONLY one JSON object and nothing else — no prose, no markdown, no code fences.\n` +
-          `{"importance": <1-5>, "canonical": <true|false>, "kind": "episodic"|"semantic"}\n` +
+          `{"importance": <1-5>, "confidence": <0-1>, "canonical": <true|false>, "kind": "episodic"|"semantic"|"procedural"}\n` +
           `importance: 1=trivial, 3=useful context, 5=critical decision or goal.\n` +
+          `confidence: how reliable and explicit this classification is; do not confuse it with importance.\n` +
           `canonical: true ONLY for a confirmed decision, durable fact, or stated permanent preference that should be authoritative (be conservative; false for anything tentative, one-off, or event-like).\n` +
-          `kind: "episodic" for a specific event/decision/milestone that happened at a point in time; "semantic" for a general fact, preference, or piece of knowledge.\n\n` +
-          `Memory: ${content.slice(0, 500)}`,
+          `kind: "episodic" for an event at a point in time; "semantic" for a stable fact or knowledge; "procedural" for a workflow, method, or how-to process.\n\n` +
+          `Memory: ${getClassificationSample(content)}`,
       }],
       { max_tokens: CLASSIFY_MAX_TOKENS }
     );
-  } catch {
-    return { importance: 0, canonical: false, kind: null };
+  } catch (error) {
+    if (error instanceof Error && error.message === "invalid_response") throw error;
+    throw new Error("provider_error");
   }
   return parseClassification(text);
 }
@@ -902,9 +997,23 @@ export async function classifyEntry(content: string, env: Env): Promise<{ import
 // ─── Hashtag extraction ───────────────────────────────────────────────────────
 
 export function extractHashtags(content: string): { cleanContent: string; hashtags: string[] } {
-  const hashtags = (content.match(/#\w+/g) ?? []).map(t => t.slice(1).toLowerCase());
-  const cleanContent = content.replace(/#\w+/g, '').replace(/\s+/g, ' ').trim();
+  const hashtagPattern = /(?<![\p{L}\p{N}_])#[\p{L}\p{N}_-]+/gu;
+  const normalizeSafeTag = (tag: string): string | null => {
+    const normalized = tag.toLowerCase();
+    return isD1SafeTag(normalized) ? normalized : null;
+  };
+  const hashtags = (content.match(hashtagPattern) ?? [])
+    .map(t => normalizeSafeTag(t.slice(1)))
+    .filter((tag): tag is string => tag !== null);
+  const cleanContent = content
+    .replace(hashtagPattern, match => normalizeSafeTag(match.slice(1)) !== null ? '' : match)
+    .replace(/\s+/g, ' ')
+    .trim();
   return { cleanContent, hashtags };
+}
+
+function isD1SafeTag(tag: string): boolean {
+  return new TextEncoder().encode(tag).byteLength <= D1_MAX_TAG_UTF8_BYTES;
 }
 
 // ─── Query tag inference ──────────────────────────────────────────────────────
@@ -916,7 +1025,7 @@ export async function inferQueryTags(query: string, env: Env): Promise<string[]>
   const { results: tagRows } = await env.DB.prepare(
     `SELECT DISTINCT value FROM entries, json_each(entries.tags) ORDER BY value`
   ).all();
-  const knownTags = (tagRows as { value: string }[]).map(r => r.value);
+  const knownTags = (tagRows as { value: string }[]).map(r => r.value).filter(isD1SafeTag);
 
   const lowerQuery = query.toLowerCase();
   const keywordMatches = knownTags.filter(t =>
@@ -954,7 +1063,14 @@ export function buildEntryFilterQuery(params: {
 }): { sql: string; bindings: (string | number)[] } {
   const conds: string[] = [];
   const bindings: (string | number)[] = [];
-  if (params.tag) { conds.push(`tags LIKE ?`); bindings.push(`%"${params.tag}"%`); }
+  if (params.tag) {
+    if (isD1SafeTag(params.tag)) {
+      conds.push(`tags LIKE ?`);
+      bindings.push(`%"${params.tag}"%`);
+    } else {
+      conds.push(`1 = 0`);
+    }
+  }
   if (params.after !== undefined) { conds.push(`created_at >= ?`); bindings.push(params.after); }
   if (params.before !== undefined) { conds.push(`created_at <= ?`); bindings.push(params.before); }
 
@@ -1224,6 +1340,10 @@ async function commitEntryVersion(
       env.DB.prepare(
         `UPDATE entries
          SET content = ?, tags = ?, vector_ids = ?
+             , classification_status = 'pending', classification_error = NULL
+             , classification_attempts = 0, classification_next_attempt_at = NULL
+             , classification_started_at = NULL, classification_confidence = NULL
+             , classified_at = NULL
          WHERE id = ? AND content = ? AND tags = ? AND vector_ids = ?`
       ).bind(
         input.newContent,
@@ -1272,7 +1392,7 @@ async function appendToEntry(
   addition: string,
   tags: string[],
   source: string
-): Promise<void> {
+): Promise<string> {
   if (getStatus(tags) === "deprecated") {
     throw new Error("Cannot append to a deprecated memory");
   }
@@ -1296,7 +1416,7 @@ async function appendToEntry(
       actor: source,
       reason: "Large append required full re-embedding",
     });
-    return;
+    return newContent;
   }
 
   // ── Normal append-only path (combined content ≤ CHUNK_MAX_CHARS) ────────────
@@ -1365,6 +1485,10 @@ async function appendToEntry(
       env.DB.prepare(
         `UPDATE entries
          SET content = ?, vector_ids = ?
+             , classification_status = 'pending', classification_error = NULL
+             , classification_attempts = 0, classification_next_attempt_at = NULL
+             , classification_started_at = NULL, classification_confidence = NULL
+             , classified_at = NULL
          WHERE id = ? AND content = ? AND tags = ? AND vector_ids = ?`
       ).bind(
         newContent,
@@ -1385,6 +1509,7 @@ async function appendToEntry(
     await cleanupPreparedVectors(env, [newChunkId], "Stale append");
     throw new Error("Entry changed while the append vector was being prepared");
   }
+  return newContent;
 }
 
 // ─── Synthesize insight from retrieved memories ───────────────────────────────
@@ -1536,7 +1661,7 @@ export async function compressTag(
   // not a topic — digesting them would blend unrelated memories (and could compress
   // protected/canonical ones). Never compress by them. This also guards /digest and
   // the web UI Compress button, not just the nightly cron.
-  if (tag.startsWith(STATUS_PREFIX) || tag.startsWith(KIND_PREFIX)) {
+  if (!isD1SafeTag(tag) || tag.startsWith(STATUS_PREFIX) || tag.startsWith(KIND_PREFIX)) {
     return { synthesizedId: null, entriesUsed: 0, text: "" };
   }
 
@@ -1690,11 +1815,35 @@ interface KeywordRow { id: string; content: string; tags: string; source: string
 // drop stopwords / 1-char tokens, and remove SQL LIKE wildcards so each token is a literal
 // substring. Identifier-shaped tokens (e.g. "v1.9", "#149") are preserved intact.
 export function tokenizeQuery(query: string): string[] {
-  return [...new Set(
-    query.toLowerCase().split(/\s+/)
-      .map(t => t.replace(/^[^\w#.]+|[^\w#.]+$/g, "").replace(/[%_]/g, ""))
-      .filter(t => t.length >= KEYWORD_MIN_TOKEN_LEN && !KEYWORD_STOPWORDS.has(t))
-  )];
+  const tokens = new Set<string>();
+  const segmenter = typeof Intl.Segmenter === "function"
+    ? new Intl.Segmenter("zh-CN", { granularity: "word" })
+    : null;
+  const addToken = (raw: string): void => {
+    const token = raw
+      .toLowerCase()
+      .replace(/^[^\p{L}\p{N}#.]+|[^\p{L}\p{N}#.]+$/gu, "")
+      .replace(/[%_]/g, "");
+    const utf8Bytes = new TextEncoder().encode(token).byteLength;
+    if (
+      token.length >= KEYWORD_MIN_TOKEN_LEN &&
+      utf8Bytes <= KEYWORD_MAX_LIKE_TOKEN_BYTES &&
+      !KEYWORD_STOPWORDS.has(token)
+    ) {
+      tokens.add(token);
+    }
+  };
+
+  for (const raw of query.slice(0, KEYWORD_MAX_QUERY_CHARS).split(/\s+/)) {
+    if (tokens.size >= KEYWORD_MAX_TOKENS) break;
+    addToken(raw);
+    if (!/[\p{Script=Han}]/u.test(raw) || !segmenter) continue;
+    for (const segment of segmenter.segment(raw)) {
+      if (tokens.size >= KEYWORD_MAX_TOKENS) break;
+      if (segment.isWordLike) addToken(segment.segment);
+    }
+  }
+  return [...tokens];
 }
 
 // Keyword candidates: entries whose content contains any query token, bounded by
@@ -1772,6 +1921,7 @@ export async function recallEntries(
 ): Promise<RecallSearchResult> {
   const { query, topK } = params;
   let { tag, after, before, kind } = params;
+  if (tag && !isD1SafeTag(tag)) return { matches: [], insight: "" };
   const now = Date.now();
 
   let embedQuery = query;
@@ -1966,21 +2116,139 @@ export async function recallEntries(
 
 // ─── Shared write path ────────────────────────────────────────────────────────
 
-// Classify an entry's content (importance + canonical + kind) and apply the tags,
+function classificationErrorCode(error: unknown): string {
+  if (error instanceof Error && error.message === "provider_error") return "provider_error";
+  if (error instanceof Error && error.message === "invalid_response") return "invalid_response";
+  if (error instanceof Error && error.message === "classification_conflict") return "classification_conflict";
+  return "classification_failed";
+}
+
+interface ClassificationCandidate {
+  id: string;
+  content: string;
+}
+
+type ClassificationRunResult = "succeeded" | "failed" | "skipped";
+
+async function claimClassification(
+  candidate: ClassificationCandidate,
+  startedAt: number,
+  env: Env
+): Promise<number | null> {
+  const result = await env.DB.prepare(
+    `UPDATE entries
+     SET classification_status = 'processing', classification_error = NULL,
+         classification_attempts = COALESCE(classification_attempts, 0) + 1,
+         classification_started_at = ?, classification_next_attempt_at = NULL
+     WHERE id = ? AND content = ?
+       AND tags NOT LIKE '%"status:deprecated"%'
+       AND COALESCE(classification_attempts, 0) < ?
+       AND (
+         classification_status IS NULL
+         OR classification_status = 'pending'
+         OR (classification_status = 'retryable_error'
+             AND COALESCE(classification_next_attempt_at, 0) <= ?)
+         OR (classification_status = 'processing'
+             AND COALESCE(classification_started_at, 0) <= ?)
+       )`
+  ).bind(
+    startedAt,
+    candidate.id,
+    candidate.content,
+    CLASSIFICATION_MAX_ATTEMPTS,
+    startedAt,
+    startedAt - CLASSIFICATION_PROCESSING_LEASE_MS
+  ).run();
+  if (Number(result.meta?.changes ?? 0) !== 1) return null;
+  const claimed = await env.DB.prepare(
+    `SELECT classification_attempts FROM entries
+     WHERE id = ? AND content = ?
+       AND classification_status = 'processing'
+       AND classification_started_at = ?`
+  ).bind(candidate.id, candidate.content, startedAt).first<{ classification_attempts: number }>();
+  return claimed ? Number(claimed.classification_attempts ?? 0) : null;
+}
+
+async function classifyAndPersistEntry(
+  candidate: ClassificationCandidate,
+  env: Env
+): Promise<ClassificationRunResult> {
+  const startedAt = Date.now();
+  const currentAttempt = await claimClassification(candidate, startedAt, env);
+  if (currentAttempt === null) return "skipped";
+  try {
+    const { importance, confidence, canonical, kind } = await classifyEntry(candidate.content, env);
+    for (let tagCommitAttempt = 0; tagCommitAttempt < 2; tagCommitAttempt++) {
+      const current = await env.DB.prepare(
+        `SELECT tags FROM entries
+         WHERE id = ? AND content = ?
+           AND classification_status = 'processing'
+           AND classification_started_at = ?`
+      ).bind(candidate.id, candidate.content, startedAt).first<{ tags: string }>();
+      if (!current) return "skipped";
+      const currentTagsJson = current.tags || "[]";
+      let tags: string[] = JSON.parse(currentTagsJson);
+      tags = withKind(tags, kind);
+      if (canonical && getStatus(tags) === null) tags = withStatus(tags, "canonical");
+      const result = await env.DB.prepare(
+        `UPDATE entries
+         SET tags = ?, importance_score = ?, classification_confidence = ?,
+             classification_status = 'succeeded', classification_error = NULL,
+             classification_next_attempt_at = NULL, classification_started_at = NULL,
+             classification_version = 1, classified_at = ?
+         WHERE id = ? AND content = ? AND tags = ?
+           AND classification_status = 'processing'
+           AND classification_started_at = ?`
+      ).bind(
+        JSON.stringify(tags),
+        importance,
+        confidence,
+        Date.now(),
+        candidate.id,
+        candidate.content,
+        currentTagsJson,
+        startedAt
+      ).run();
+      if (Number(result.meta?.changes ?? 0) === 1) return "succeeded";
+    }
+    throw new Error("classification_conflict");
+  } catch (error) {
+    const terminal = currentAttempt >= CLASSIFICATION_MAX_ATTEMPTS;
+    const nextAttemptAt = terminal
+      ? null
+      : Date.now() + CLASSIFICATION_RETRY_BASE_MS * 2 ** Math.max(0, currentAttempt - 1);
+    const result = await env.DB.prepare(
+      `UPDATE entries
+       SET classification_status = ?, classification_error = ?,
+           classification_next_attempt_at = ?, classification_started_at = NULL
+       WHERE id = ? AND content = ?
+         AND classification_status = 'processing'
+         AND classification_started_at = ?`
+    ).bind(
+      terminal ? "terminal_error" : "retryable_error",
+      classificationErrorCode(error),
+      nextAttemptAt,
+      candidate.id,
+      candidate.content,
+      startedAt
+    ).run();
+    return Number(result.meta?.changes ?? 0) === 1 ? "failed" : "skipped";
+  }
+}
+
+// Classify an entry's content and persist durable success/failure state,
 // asynchronously. Used for both newly-inserted entries and smart-merge targets.
-function scheduleClassifyAndTag(entryId: string, content: string, env: Env, ctx: ExecutionContext): void {
+function scheduleClassifyAndTag(
+  entryId: string,
+  content: string,
+  env: Env,
+  ctx: ExecutionContext
+): void {
   ctx.waitUntil(
-    classifyEntry(content, env)
-      .then(async ({ importance, canonical, kind }) => {
-        await env.DB.prepare(`UPDATE entries SET importance_score = ? WHERE id = ?`).bind(importance, entryId).run();
-        if (!kind && !canonical) return;
-        const row = await env.DB.prepare(`SELECT tags FROM entries WHERE id = ?`).bind(entryId).first() as Record<string, any> | null;
-        if (!row) return;
-        let tags: string[] = JSON.parse(row.tags ?? "[]");
-        if (kind) tags = withKind(tags, kind);
-        if (canonical && getStatus(tags) === null) tags = withStatus(tags, "canonical");
-        await env.DB.prepare(`UPDATE entries SET tags = ? WHERE id = ?`).bind(JSON.stringify(tags), entryId).run();
-      })
+    classifyAndPersistEntry({
+      id: entryId,
+      content,
+    }, env)
       .catch(e => console.error("Classification failed (non-fatal):", e))
   );
 }
@@ -2067,7 +2335,10 @@ export async function captureEntry(
   const raw = rawContent.trim();
   const { cleanContent, hashtags } = extractHashtags(raw);
   const c = cleanContent || raw;
-  const t = [...new Set([...tags.map(tag => tag.toLowerCase()), ...hashtags])];
+  const t = [...new Set([
+    ...tags.map(tag => tag.toLowerCase()).filter(isD1SafeTag),
+    ...hashtags,
+  ])];
 
   const { duplicate: dup, contradiction, mergeAction } = await checkDuplicateAndContradiction(c, env);
 
@@ -2340,8 +2611,9 @@ function buildMcpServer(env: Env, ctx: ExecutionContext): McpServer {
         };
       }
 
+      let appendedContent: string;
       try {
-        await appendToEntry(env, id, existingContent, a, tags, source);
+        appendedContent = await appendToEntry(env, id, existingContent, a, tags, source);
       } catch (e) {
         console.error("Append failed:", e);
         return {
@@ -2349,6 +2621,7 @@ function buildMcpServer(env: Env, ctx: ExecutionContext): McpServer {
           isError: true,
         };
       }
+      scheduleClassifyAndTag(id, appendedContent, env, ctx);
 
       return {
         content: [{
@@ -2413,6 +2686,7 @@ function buildMcpServer(env: Env, ctx: ExecutionContext): McpServer {
           isError: true,
         };
       }
+      scheduleClassifyAndTag(id, newContent, env, ctx);
 
       return {
         content: [{ type: "text", text: `Updated entry ${id}. Re-embedded as ${newVectorIds.length} vector(s).` }],
@@ -2448,7 +2722,7 @@ function buildMcpServer(env: Env, ctx: ExecutionContext): McpServer {
         tag: z.string().optional().describe("Filter by a specific tag"),
         after: z.number().int().optional().describe("Only return entries after this Unix ms timestamp"),
         before: z.number().int().optional().describe("Only return entries before this Unix ms timestamp"),
-        kind: z.enum([...KIND_VALUES] as [string, ...string[]]).optional().describe("Filter to episodic (events) or semantic (facts/knowledge)"),
+        kind: z.enum([...KIND_VALUES] as [string, ...string[]]).optional().describe("Filter to episodic (events), semantic (facts/knowledge), or procedural (workflows/how-to)"),
       },
     },
     async ({ query, topK, tag, after, before, kind }) => {
@@ -2902,12 +3176,14 @@ const defaultHandler = {
       const tags: string[] = JSON.parse(row.tags ?? "[]");
       const source = row.source as string;
 
+      let appendedContent: string;
       try {
-        await appendToEntry(env, id, existingContent, addition, tags, source);
+        appendedContent = await appendToEntry(env, id, existingContent, addition, tags, source);
       } catch (e) {
         console.error("Append failed:", e);
         return json({ ok: false, error: "Append failed. Retry later." }, 500);
       }
+      scheduleClassifyAndTag(id, appendedContent, env, ctx);
 
       return json({
         ok: true,
@@ -2962,6 +3238,7 @@ const defaultHandler = {
           error: "Update could not be indexed. Previous content remains active; retry later.",
         }, 503);
       }
+      scheduleClassifyAndTag(id, finalContent, env, ctx);
 
       return json({ ok: true, id, vectors: newVectorIds.length });
     }
@@ -2995,7 +3272,7 @@ const defaultHandler = {
            SUM(CASE WHEN vector_ids = '[]'
                      AND tags NOT LIKE '%"status:deprecated"%'
                      AND created_at < ? THEN 1 ELSE 0 END) as unvectorized,
-           SUM(CASE WHEN tags NOT LIKE '%"status:%' AND tags NOT LIKE '%"kind:%' THEN 1 ELSE 0 END) as unclassified
+           SUM(CASE WHEN classification_status IS NULL OR classification_status <> 'succeeded' THEN 1 ELSE 0 END) as unclassified
            FROM entries`
         ).bind(graceCutoff).first() as Promise<Record<string, any> | null>,
         env.DB.prepare(`SELECT value, COUNT(*) as n FROM entries, json_each(entries.tags) GROUP BY value ORDER BY n DESC LIMIT 5`).all(),
@@ -3019,6 +3296,7 @@ const defaultHandler = {
       const cutoff = Date.now() - 86400000;
       const digestCandidates: { tag: string; count: number }[] = [];
       for (const row of candidateRows.results as any[]) {
+        if (!isD1SafeTag(String(row.tag ?? ""))) continue;
         const existing = await env.DB.prepare(
           `SELECT id FROM entries WHERE tags LIKE '%"synthesized"%' AND tags LIKE ? AND created_at > ? LIMIT 1`
         ).bind(`%"${row.tag}"%`, cutoff).first();
@@ -3077,7 +3355,11 @@ const defaultHandler = {
         }
         const q = await env.DB.prepare(
           `SELECT id, content, tags, source, created_at, vector_ids,
-                  recall_count, importance_score, contradiction_wins, contradiction_losses
+                  recall_count, importance_score, classification_confidence,
+                  classification_status, classification_error, classification_attempts,
+                  classification_next_attempt_at, classification_started_at,
+                  classification_version, classified_at,
+                  contradiction_wins, contradiction_losses
            FROM entries
            WHERE created_at < ? OR (created_at = ? AND id < ?)
            ORDER BY created_at DESC, id DESC
@@ -3087,7 +3369,11 @@ const defaultHandler = {
       } else {
         const q = await env.DB.prepare(
           `SELECT id, content, tags, source, created_at, vector_ids,
-                  recall_count, importance_score, contradiction_wins, contradiction_losses
+                  recall_count, importance_score, classification_confidence,
+                  classification_status, classification_error, classification_attempts,
+                  classification_next_attempt_at, classification_started_at,
+                  classification_version, classified_at,
+                  contradiction_wins, contradiction_losses
            FROM entries
            ORDER BY created_at DESC, id DESC
            LIMIT ?`
@@ -3102,7 +3388,7 @@ const defaultHandler = {
           : null;
 
       return json({
-        schemaVersion: 2,
+        schemaVersion: 3,
         exportedAt: new Date().toISOString(),
         source: env.SELFHOST === "1" ? "selfhost" : "cloudflare",
         total,
@@ -3378,36 +3664,49 @@ const defaultHandler = {
     }
 
     // POST /classify-pending
-    // One-time, opt-in backfill: runs classifyEntry over entries that predate the
-    // status (#119) and kind (#12) features and writes status:/kind: tags. Bounded
-    // batch per call, idempotent (skips entries that already carry either tag), and
-    // Resumable (safe to stop/restart). Backfills the same classification fields
-    // used for newly captured memories so historical rows rank consistently.
+    // Bounded, resumable classification worker. It handles legacy pending rows and
+    // retries failed rows up to CLASSIFICATION_MAX_ATTEMPTS without looping forever.
     if (url.pathname === "/classify-pending" && request.method === "POST") {
       const authErr = requireAuth(request, env);
       if (authErr) return authErr;
 
-      const UNCLASSIFIED_WHERE = `tags NOT LIKE '%"status:%' AND tags NOT LIKE '%"kind:%'`;
+      const now = Date.now();
+      const leaseCutoff = now - CLASSIFICATION_PROCESSING_LEASE_MS;
+      // Cloudflare's first invocation may also run schema initialization. Keep
+      // enough headroom under D1 Free's 50-query invocation cap; self-hosted
+      // SQLite does not have that subrequest limit.
+      const batchLimit = env.SELFHOST === "1"
+        ? CLASSIFICATION_SELFHOST_BATCH_LIMIT
+        : CLASSIFICATION_CLOUDFLARE_BATCH_LIMIT;
+      const DUE_WHERE =
+        `tags NOT LIKE '%"status:deprecated"%' ` +
+        `AND COALESCE(classification_attempts, 0) < ${CLASSIFICATION_MAX_ATTEMPTS} ` +
+        `AND (classification_status IS NULL OR classification_status = 'pending' ` +
+        `OR (classification_status = 'retryable_error' AND COALESCE(classification_next_attempt_at, 0) <= ${now}) ` +
+        `OR (classification_status = 'processing' AND COALESCE(classification_started_at, 0) <= ${leaseCutoff}))`;
 
       const { results: toProcess } = await env.DB.prepare(
-        `SELECT id, content, tags FROM entries
-         WHERE ${UNCLASSIFIED_WHERE}
-         ORDER BY created_at ASC LIMIT 25`
+        `SELECT id, content
+         FROM entries
+         WHERE ${DUE_WHERE}
+         ORDER BY CASE WHEN classification_status IS NULL OR classification_status = 'pending' THEN 0 ELSE 1 END,
+                  created_at ASC
+         LIMIT ${batchLimit}`
       ).all();
 
       let processed = 0;
       let failed = 0;
+      let skipped = 0;
 
       for (const row of toProcess as Record<string, any>[]) {
         try {
-          const { importance, canonical, kind } = await classifyEntry(row.content as string, env);
-          let tags: string[] = JSON.parse(row.tags as string);
-          if (kind) tags = withKind(tags, kind);
-          if (canonical && getStatus(tags) === null) tags = withStatus(tags, "canonical");
-          await env.DB.prepare(
-            `UPDATE entries SET tags = ?, importance_score = ? WHERE id = ?`
-          ).bind(JSON.stringify(tags), importance, row.id).run();
-          processed++;
+          const outcome = await classifyAndPersistEntry({
+            id: row.id as string,
+            content: row.content as string,
+          }, env);
+          if (outcome === "succeeded") processed++;
+          else if (outcome === "failed") failed++;
+          else skipped++;
         } catch (e) {
           console.error("Classification backfill failed for entry", row.id, e);
           failed++;
@@ -3415,10 +3714,27 @@ const defaultHandler = {
       }
 
       const remaining = await env.DB.prepare(
-        `SELECT COUNT(*) as count FROM entries WHERE ${UNCLASSIFIED_WHERE}`
+        `SELECT COUNT(*) as count FROM entries WHERE ${DUE_WHERE}`
+      ).first() as Record<string, any> | null;
+      const deferred = await env.DB.prepare(
+        `SELECT COUNT(*) as count FROM entries
+         WHERE classification_status = 'retryable_error'
+           AND COALESCE(classification_attempts, 0) < ${CLASSIFICATION_MAX_ATTEMPTS}
+           AND classification_next_attempt_at > ${now}`
+      ).first() as Record<string, any> | null;
+      const exhausted = await env.DB.prepare(
+        `SELECT COUNT(*) as count FROM entries
+         WHERE classification_status = 'terminal_error'`
       ).first() as Record<string, any> | null;
 
-      return json({ processed, failed, remaining: (remaining?.count as number) ?? 0 });
+      return json({
+        processed,
+        failed,
+        skipped,
+        remaining: (remaining?.count as number) ?? 0,
+        deferred: (deferred?.count as number) ?? 0,
+        exhausted: (exhausted?.count as number) ?? 0,
+      });
     }
 
     // POST /import — Cloudflare / dashboard JSON export → entries (vector_ids cleared)
@@ -3443,6 +3759,14 @@ const defaultHandler = {
         }
       } catch (e) {
         return json({ ok: false, error: e instanceof Error ? e.message : String(e) }, 400);
+      }
+
+      if (env.SELFHOST !== "1" && entries.length > CLOUDFLARE_IMPORT_MAX_ROWS) {
+        return json({
+          ok: false,
+          error: `Cloudflare import accepts at most ${CLOUDFLARE_IMPORT_MAX_ROWS} rows per request. Split the export into smaller batches.`,
+          maxRows: CLOUDFLARE_IMPORT_MAX_ROWS,
+        }, 413);
       }
 
       const opts = (body && typeof body === "object" && !Array.isArray(body)

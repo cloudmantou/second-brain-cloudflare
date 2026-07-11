@@ -16,4 +16,8 @@ describe("web memory mutation API contract", () => {
   it("validates capture, append, and forget REST responses", () => {
     expect((html.match(/parseApiJsonResponse\(/g) ?? []).length).toBeGreaterThanOrEqual(3);
   });
+
+  it("imports backups sequentially in D1-safe batches", () => {
+    expect(html).toContain("await importEntriesInBatches(entries");
+  });
 });
