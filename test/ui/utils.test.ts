@@ -7,7 +7,45 @@ const {
   toDateStr,
   createCfSseParser,
   parseApiJsonResponse,
+  importEntriesInBatches,
 } = require("../../public/utils.js");
+
+describe("importEntriesInBatches", () => {
+  it("sends five entries as sequential 4 + 1 batches and aggregates totals", async () => {
+    const calls: number[][] = [];
+    let active = 0;
+    let maxActive = 0;
+    const result = await importEntriesInBatches([1, 2, 3, 4, 5], async (batch: number[]) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      calls.push(batch);
+      await Promise.resolve();
+      active -= 1;
+      return {
+        ok: true,
+        inserted: batch.length,
+        skipped: 0,
+        updated: 0,
+        failed: 0,
+        pendingVectorizeCount: batch.length,
+      };
+    }, 4);
+
+    expect(calls).toEqual([[1, 2, 3, 4], [5]]);
+    expect(maxActive).toBe(1);
+    expect(result).toMatchObject({ inserted: 5, pendingVectorizeCount: 5 });
+  });
+
+  it("stops after a failed batch", async () => {
+    let calls = 0;
+    await expect(importEntriesInBatches([1, 2, 3, 4, 5], async () => {
+      calls += 1;
+      if (calls === 2) throw new Error("batch failed");
+      return { ok: true, inserted: 4 };
+    }, 4)).rejects.toThrow("batch failed");
+    expect(calls).toBe(2);
+  });
+});
 
 describe("parseApiJsonResponse", () => {
   it("returns a successful REST payload", async () => {
@@ -151,6 +189,26 @@ describe("parseRecallResult", () => {
     const results = parseRecallResult(text);
     expect(results[0].tags).toEqual(["react", "typescript"]);
     expect(results[0].content).toBe("Tagged note");
+  });
+
+  it("parses Chinese hashtags with the same Unicode rules as the server", () => {
+    const results = parseRecallResult(`1. [80%] 中文笔记 #记忆 #黑洞设计 (id: t2)`);
+    expect(results[0].tags).toEqual(["记忆", "黑洞设计"]);
+    expect(results[0].content).toBe("中文笔记");
+  });
+
+  it("preserves C# syntax and overlong Unicode hashtag text", () => {
+    const longTag = "记".repeat(16);
+    const results = parseRecallResult(`1. [80%] C#中文教程 #${longTag} (id: t3)`);
+    expect(results[0].tags).toEqual([]);
+    expect(results[0].content).toBe(`C#中文教程 #${longTag}`);
+  });
+
+  it("preserves a hashtag that exceeds the byte limit after lowercasing", () => {
+    const expandsWhenLowercased = "İ".repeat(23);
+    const results = parseRecallResult(`1. [80%] note #${expandsWhenLowercased} (id: t4)`);
+    expect(results[0].tags).toEqual([]);
+    expect(results[0].content).toBe(`note #${expandsWhenLowercased}`);
   });
 
   it("returns null id when no (id: …) marker is present", () => {

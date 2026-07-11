@@ -4093,13 +4093,14 @@
             appendBrainBubble(msgs, t('recall.empty'), 'recall-sys')
           } else {
             const recentActivity = data.mode === 'recent_activity'
-            // REST scores are already 0–100 (one decimal); map directly rather than via
-            // normalizeEntry, whose 0–1 rescale heuristic would turn a 0.8% match into 80%
+            // REST score is a relative rank 0–100 (top=100), not probability.
+            // Prefer server-provided relevance labels; fall back to band from score.
             const entries = data.results.map((m) => ({
               id: m.id,
               content: m.content,
               tags: m.tags || [],
               score: recentActivity ? null : Math.min(100, Math.round(m.score)),
+              relevance: recentActivity ? null : (m.relevance || null),
               createdAt: m.created_at,
               source: m.source || '',
             }))
@@ -4119,7 +4120,9 @@
                 const date = new Date(m.created_at).toLocaleDateString()
                 const tagList = m.tags && m.tags.length ? ` [${m.tags.join(', ')}]` : ''
                 const src = m.source ? ` · ${m.source}` : ''
-                const relevance = recentActivity ? '' : ` (${Math.min(100, Math.round(m.score))}% match)`
+                const relevance = recentActivity
+                  ? ''
+                  : ` (${m.relevance || (m.score >= 85 ? 'highly relevant' : m.score >= 55 ? 'relevant' : 'possibly relevant')})`
                 return `${i + 1}. [${date}${src}${tagList}]${relevance}${m.updated ? ' [updated]' : ''}\n${m.content}`
               }).join('\n\n')
             const res = await fetch(`${WORKER_URL}/chat`, {
@@ -4195,10 +4198,18 @@
         const card = document.createElement('div')
         const isSynthesized = entry.tags.includes('synthesized')
         const isRolledUp = entry.tags.includes('rolled-up')
+        const relevanceLabel = entry.relevance
+          || (entry.score == null
+            ? ''
+            : entry.score >= 85
+              ? 'Highly relevant'
+              : entry.score >= 55
+                ? 'Relevant'
+                : 'Possibly relevant')
         const matchLine = entry.score == null
           ? `<div class="match-line"><span class="match-pct">${escHtml(new Date(entry.createdAt).toLocaleDateString())}${entry.source ? ` · ${escHtml(entry.source)}` : ''}</span></div>`
           : `<div class="match-line">
-      <span class="match-pct">${entry.score}%</span>
+      <span class="match-pct" title="Relative rank score ${entry.score}/100 (not accuracy)">${escHtml(relevanceLabel)}</span>
       <div class="match-bar-bg"><div class="match-bar-fill" style="width:${entry.score}%"></div></div>
     </div>`
         card.className = 'memory-card' + (isSynthesized ? ' card--synthesized' : '') + (isRolledUp ? ' card--rolled-up' : '')
@@ -4349,15 +4360,35 @@
         if (!raw) return
         const msgs = document.getElementById('remember-messages')
         const tags = [],
-          tagRe = /#([a-zA-Z0-9_-]+)/g
+          tagRe = /(?<![\p{L}\p{N}_])#([\p{L}\p{N}_-]+)/gu
         let m
-        while ((m = tagRe.exec(raw)) !== null) tags.push(m[1])
-        const content = raw.replace(/#[a-zA-Z0-9_-]+/g, '').trim()
+        while ((m = tagRe.exec(raw)) !== null) {
+          const normalized = normalizeSafeTag(m[1])
+          if (normalized !== null) tags.push(normalized)
+        }
+        const content = raw.replace(
+          /(?<![\p{L}\p{N}_])#[\p{L}\p{N}_-]+/gu,
+          match => normalizeSafeTag(match.slice(1)) !== null ? '' : match
+        ).trim()
         const userRow = document.createElement('div')
         userRow.className = 'capture-note'
         const introEl = document.getElementById('remember-intro')
         if (introEl) introEl.remove()
-        userRow.innerHTML = raw.replace(/#([a-zA-Z0-9_-]+)/g, '<span class="hashtag">#$1</span>')
+        const displayTagRe = /(?<![\p{L}\p{N}_])#[\p{L}\p{N}_-]+/gu
+        let displayOffset = 0
+        for (const match of raw.matchAll(displayTagRe)) {
+          userRow.append(document.createTextNode(raw.slice(displayOffset, match.index)))
+          if (normalizeSafeTag(match[0].slice(1)) !== null) {
+            const tag = document.createElement('span')
+            tag.className = 'hashtag'
+            tag.textContent = match[0]
+            userRow.append(tag)
+          } else {
+            userRow.append(document.createTextNode(match[0]))
+          }
+          displayOffset = match.index + match[0].length
+        }
+        userRow.append(document.createTextNode(raw.slice(displayOffset)))
         msgs.appendChild(userRow)
         input.value = ''
         autoResize(input)
@@ -5346,20 +5377,28 @@
           )
           if (!mode) return
 
-          const res = await fetch(`${WORKER_URL}/import`, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${AUTH_TOKEN}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              entries,
-              mode: 'skip',
-              extraTags: ['cf-import'],
-            }),
-          })
-          const data = await readJsonResponse(res)
-          if (!res.ok || data.ok === false) throw new Error(data.error || res.statusText || `HTTP ${res.status}`)
+          // Four rows keeps each Cloudflare D1 import request within its query
+          // budget even when every row is new. Run batches sequentially so a
+          // large backup does not create a burst of concurrent writes.
+          const data = await importEntriesInBatches(entries, async batchEntries => {
+            const res = await fetch(`${WORKER_URL}/import`, {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${AUTH_TOKEN}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                entries: batchEntries,
+                mode: 'skip',
+                extraTags: ['cf-import'],
+              }),
+            })
+            const batch = await readJsonResponse(res)
+            if (!res.ok || batch.ok === false) {
+              throw new Error(batch.error || res.statusText || `HTTP ${res.status}`)
+            }
+            return batch
+          }, 4)
 
           const pending = data.pendingVectorizeCount ?? data.pendingVectorize?.length ?? 0
           let msg = `导入完成：新增 ${data.inserted}，跳过 ${data.skipped}，更新 ${data.updated || 0}，失败 ${data.failed}。`
@@ -5420,7 +5459,7 @@
           if (format === 'json') {
             content = JSON.stringify(
               {
-                schemaVersion: 2,
+                schemaVersion: 3,
                 exportedAt: new Date().toISOString(),
                 total: entries.length,
                 entries,

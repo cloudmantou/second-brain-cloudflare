@@ -75,6 +75,121 @@ describe("importEntries", () => {
     expect(db.entries[0].contradiction_wins).toBe(1);
   });
 
+  it("preserves a complete successful classification from a backup", async () => {
+    await importEntries(db as unknown as D1Database, [{
+      id: "classified",
+      content: "A stable fact",
+      tags: '["kind:semantic"]',
+      classification_status: "succeeded",
+      classification_confidence: 0.91,
+      classification_attempts: 1,
+      classification_version: 1,
+      classified_at: 1_700_000_000_000,
+    }], { extraTags: [] });
+    expect(db.entries[0]).toMatchObject({
+      classification_status: "succeeded",
+      classification_confidence: 0.91,
+      classification_attempts: 1,
+      classified_at: 1_700_000_000_000,
+    });
+  });
+
+  it("migrates a legacy kind-only backup row as an existing classification", async () => {
+    await importEntries(db as unknown as D1Database, [{
+      id: "legacy-kind-only",
+      content: "A legacy stable fact",
+      tags: '["work","kind:semantic"]',
+      created_at: 1_700_000_000_000,
+    }], { extraTags: [] });
+
+    expect(db.entries[0]).toMatchObject({
+      classification_status: "succeeded",
+      classification_confidence: 0.5,
+      classification_attempts: 1,
+      classified_at: 1_700_000_000_000,
+    });
+  });
+
+  it("resets incomplete claimed-success metadata to pending", async () => {
+    await importEntries(db as unknown as D1Database, [{
+      id: "invalid-classification",
+      content: "Missing kind and confidence",
+      tags: "[]",
+      classification_status: "succeeded",
+    }], { extraTags: [] });
+    expect(db.entries[0]).toMatchObject({
+      classification_status: "pending",
+      classification_confidence: null,
+      classification_started_at: null,
+    });
+  });
+
+  it("rejects unknown kind tags as successful classification evidence", async () => {
+    await importEntries(db as unknown as D1Database, [{
+      id: "invalid-kind",
+      content: "Invalid classification",
+      tags: '["kind:garbage"]',
+      classification_status: "succeeded",
+      classification_confidence: 0.9,
+    }], { extraTags: [] });
+    expect(db.entries[0]).toMatchObject({
+      classification_status: "pending",
+      classification_confidence: null,
+      classification_attempts: 0,
+    });
+  });
+
+  it("keeps exactly one valid kind and removes invalid kind tags", async () => {
+    await importEntries(db as unknown as D1Database, [{
+      id: "mixed-kind",
+      content: "A stable fact",
+      tags: '["work","kind:garbage","kind:semantic"]',
+      classification_status: "succeeded",
+      classification_confidence: 0.9,
+    }], { extraTags: [] });
+
+    expect(JSON.parse(db.entries[0].tags)).toEqual(["work", "kind:semantic"]);
+    expect(db.entries[0].classification_status).toBe("succeeded");
+  });
+
+  it("resets classification when imported valid kind tags conflict", async () => {
+    await importEntries(db as unknown as D1Database, [{
+      id: "conflicting-kinds",
+      content: "Conflicting classification",
+      tags: '["work","kind:semantic","kind:episodic"]',
+      classification_status: "succeeded",
+      classification_confidence: 0.9,
+    }], { extraTags: [] });
+
+    expect(JSON.parse(db.entries[0].tags)).toEqual(["work"]);
+    expect(db.entries[0]).toMatchObject({
+      classification_status: "pending",
+      classification_confidence: null,
+      classification_attempts: 0,
+    });
+  });
+
+  it("normalizes imported status and attempt combinations", async () => {
+    await importEntries(db as unknown as D1Database, [
+      { id: "pending", content: "pending", classification_status: "pending", classification_attempts: 3 },
+      { id: "retry", content: "retry", classification_status: "retryable_error", classification_attempts: 99 },
+      { id: "terminal", content: "terminal", classification_status: "terminal_error", classification_attempts: 0 },
+    ], { extraTags: [] });
+    expect(db.entries.find(entry => entry.id === "pending")).toMatchObject({
+      classification_status: "pending",
+      classification_attempts: 0,
+    });
+    expect(db.entries.find(entry => entry.id === "retry")).toMatchObject({
+      classification_status: "retryable_error",
+      classification_attempts: 2,
+      classification_next_attempt_at: expect.any(Number),
+    });
+    expect(db.entries.find(entry => entry.id === "terminal")).toMatchObject({
+      classification_status: "terminal_error",
+      classification_attempts: 3,
+    });
+  });
+
   it("skips existing ids in skip mode", async () => {
     await importEntries(db as unknown as D1Database, [
       { id: "a", content: "one", tags: "[]", source: "api", created_at: 1 },

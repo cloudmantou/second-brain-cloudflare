@@ -3,6 +3,18 @@
  */
 
 export type ImportMode = "skip" | "overwrite";
+const VALID_MEMORY_KIND_TAGS = new Set([
+  "kind:episodic",
+  "kind:semantic",
+  "kind:procedural",
+]);
+const D1_MAX_TAG_UTF8_BYTES = 46;
+
+async function contentFingerprint(content: string): Promise<string> {
+  const bytes = new TextEncoder().encode(content.trim().replace(/\s+/g, " "));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 export interface ImportOptions {
   mode?: ImportMode;
@@ -41,7 +53,7 @@ function normalizeTags(raw: unknown, extra: string[]): string[] {
   for (const t of extra) {
     if (t && !tags.includes(t)) tags.push(t);
   }
-  return tags;
+  return tags.filter(tag => new TextEncoder().encode(tag).byteLength <= D1_MAX_TAG_UTF8_BYTES);
 }
 
 function asNonEmptyString(v: unknown): string | null {
@@ -57,6 +69,23 @@ function asSafeInt(v: unknown, fallback = 0): number {
     if (Number.isFinite(n)) return Math.max(0, Math.floor(n));
   }
   return fallback;
+}
+
+function asConfidence(v: unknown): number | null {
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > 1) return null;
+  return v;
+}
+
+function asOptionalTimestamp(v: unknown): number | null {
+  if (v == null || v === "") return null;
+  if (typeof v === "number" && Number.isFinite(v) && v > 0) return normalizeTimestamp(v);
+  if (typeof v === "string" && v.trim()) {
+    const numeric = Number(v);
+    if (Number.isFinite(numeric) && numeric > 0) return normalizeTimestamp(numeric);
+    const parsed = Date.parse(v);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return null;
 }
 
 /** Unix seconds → ms; already-ms values left alone. */
@@ -128,15 +157,57 @@ export async function importEntries(
           ? crypto.randomUUID()
           : `import-${Date.now()}-${i}`);
 
-      const tags = normalizeTags(r.tags, extraTags);
+      const importedTags = normalizeTags(r.tags, extraTags);
+      const importedKinds = [
+        ...new Set(importedTags.filter(tag => VALID_MEMORY_KIND_TAGS.has(tag))),
+      ];
+      const tags = importedTags.filter(tag => !tag.startsWith("kind:"));
+      if (importedKinds.length === 1) tags.push(importedKinds[0]);
       const source = asNonEmptyString(r.source) || "import";
       const created_at = asCreatedAt(r.created_at);
       const tagsJson = JSON.stringify(tags);
       const vectorIds = "[]";
       const recall_count = asSafeInt(r.recall_count, 0);
       const importance_score = asSafeInt(r.importance_score, 0);
+      const importedConfidence = asConfidence(r.classification_confidence);
+      const hasImportedStatus = typeof r.classification_status === "string";
+      const importedStatus = hasImportedStatus
+        ? r.classification_status
+        : "pending";
+      const hasKind = importedKinds.length === 1;
+      const legacyKindClassification = !hasImportedStatus && hasKind;
+      const classification_status =
+        legacyKindClassification || (importedStatus === "succeeded" && importedConfidence !== null && hasKind)
+          ? "succeeded"
+          : importedStatus === "retryable_error"
+            ? "retryable_error"
+            : importedStatus === "terminal_error"
+              ? "terminal_error"
+              : "pending";
+      const classification_confidence = classification_status === "succeeded"
+        ? importedConfidence ?? 0.5
+        : null;
+      const classification_error = classification_status.endsWith("_error")
+        ? asNonEmptyString(r.classification_error)?.slice(0, 100) ?? "classification_failed"
+        : null;
+      const importedAttempts = asSafeInt(r.classification_attempts, 0);
+      const classification_attempts = classification_status === "pending"
+        ? 0
+        : classification_status === "terminal_error"
+          ? 3
+          : classification_status === "retryable_error"
+            ? Math.max(1, Math.min(2, importedAttempts))
+            : Math.max(1, importedAttempts);
+      const classification_next_attempt_at = classification_status === "retryable_error"
+        ? asOptionalTimestamp(r.classification_next_attempt_at) ?? Date.now()
+        : null;
+      const classification_version = Math.max(1, asSafeInt(r.classification_version, 1));
+      const classified_at = classification_status === "succeeded"
+        ? asOptionalTimestamp(r.classified_at) ?? created_at
+        : null;
       const contradiction_wins = asSafeInt(r.contradiction_wins, 0);
       const contradiction_losses = asSafeInt(r.contradiction_losses, 0);
+      const content_hash = await contentFingerprint(content);
 
       const existing = await db
         .prepare(`SELECT id FROM entries WHERE id = ?`)
@@ -151,7 +222,11 @@ export async function importEntries(
         await db
           .prepare(
             `UPDATE entries SET content = ?, tags = ?, source = ?, created_at = ?, vector_ids = ?,
-             recall_count = ?, importance_score = ?, contradiction_wins = ?, contradiction_losses = ?
+             recall_count = ?, importance_score = ?, classification_confidence = ?,
+             classification_status = ?, classification_error = ?, classification_attempts = ?,
+             classification_next_attempt_at = ?, classification_started_at = NULL,
+             classification_version = ?, classified_at = ?,
+             contradiction_wins = ?, contradiction_losses = ?, content_hash = ?
              WHERE id = ?`
           )
           .bind(
@@ -162,8 +237,16 @@ export async function importEntries(
             vectorIds,
             recall_count,
             importance_score,
+            classification_confidence,
+            classification_status,
+            classification_error,
+            classification_attempts,
+            classification_next_attempt_at,
+            classification_version,
+            classified_at,
             contradiction_wins,
             contradiction_losses,
+            content_hash,
             id
           )
           .run();
@@ -173,8 +256,12 @@ export async function importEntries(
         await db
           .prepare(
             `INSERT INTO entries (id, content, tags, source, created_at, vector_ids,
-             recall_count, importance_score, contradiction_wins, contradiction_losses)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             recall_count, importance_score, classification_confidence,
+             classification_status, classification_error, classification_attempts,
+             classification_next_attempt_at, classification_started_at,
+             classification_version, classified_at,
+             contradiction_wins, contradiction_losses, content_hash)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`
           )
           .bind(
             id,
@@ -185,8 +272,16 @@ export async function importEntries(
             vectorIds,
             recall_count,
             importance_score,
+            classification_confidence,
+            classification_status,
+            classification_error,
+            classification_attempts,
+            classification_next_attempt_at,
+            classification_version,
+            classified_at,
             contradiction_wins,
-            contradiction_losses
+            contradiction_losses,
+            content_hash
           )
           .run();
         result.inserted++;

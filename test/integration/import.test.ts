@@ -46,6 +46,17 @@ describe("POST /import", () => {
     expect(db.entries[0].vector_ids).toBe("[]");
   });
 
+  it("rejects Cloudflare imports larger than the cold-start-safe batch", async () => {
+    const body = Array.from({ length: 5 }, (_, index) => ({
+      id: `imp-batch-${index}`,
+      content: `memory ${index}`,
+    }));
+    const res = await worker.fetch(req("POST", "/import", { body }), env, ctx);
+    expect(res.status).toBe(413);
+    expect(await res.json()).toMatchObject({ ok: false, maxRows: 4 });
+    expect(db.entries).toHaveLength(0);
+  });
+
   it("imports { entries, mode } envelope", async () => {
     db.entries.push({
       id: "imp-2",

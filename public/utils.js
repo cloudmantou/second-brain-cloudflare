@@ -33,6 +33,17 @@ function toDateStr(d) {
   return `${y}-${m}-${day}`;
 }
 
+const D1_MAX_TAG_UTF8_BYTES = 46;
+
+/* Return the canonical stored tag, or null when its normalized UTF-8 payload
+ * cannot safely participate in D1's JSON LIKE patterns. */
+function normalizeSafeTag(tag) {
+  const normalized = String(tag).toLowerCase();
+  return new TextEncoder().encode(normalized).byteLength <= D1_MAX_TAG_UTF8_BYTES
+    ? normalized
+    : null;
+}
+
 /* Parse the text returned by the `recall` MCP tool into entry objects.
  * Tolerant of a few shapes: JSON array, or a numbered / bulleted text list
  * with an optional [NN%] score, inline #hashtags, and a trailing (id: …).
@@ -73,9 +84,15 @@ function parseRecallResult(result) {
 
     // hashtags
     const tags = [];
-    let tm; const tagRe = /#([a-zA-Z0-9_-]+)/g;
-    while ((tm = tagRe.exec(body)) !== null) tags.push(tm[1]);
-    const content = body.replace(/#[a-zA-Z0-9_-]+/g, '').replace(/\s{2,}/g, ' ').trim();
+    let tm; const tagRe = /(?<![\p{L}\p{N}_])#([\p{L}\p{N}_-]+)/gu;
+    while ((tm = tagRe.exec(body)) !== null) {
+      const normalized = normalizeSafeTag(tm[1]);
+      if (normalized !== null) tags.push(normalized);
+    }
+    const content = body
+      .replace(/(?<![\p{L}\p{N}_])#[\p{L}\p{N}_-]+/gu, match => normalizeSafeTag(match.slice(1)) !== null ? '' : match)
+      .replace(/\s{2,}/g, ' ')
+      .trim();
 
     if (content) {
       entries.push({
@@ -98,9 +115,10 @@ function normalizeEntry(e) {
   }
   if (!Array.isArray(tags)) tags = [];
   let score = e.score != null ? e.score : (e.similarity != null ? e.similarity : 0);
-  if (score > 0 && score <= 1) score = Math.round(score * 100);   // 0–1 → percent
+  if (score > 0 && score <= 1) score = Math.round(score * 100);   // 0–1 rank → 0–100 scale
   return {
     score: Math.round(score) || 0,
+    relevance: e.relevance || null,
     content: e.content != null ? e.content : (e.text || ''),
     tags,
     id: e.id != null ? e.id : null
@@ -196,6 +214,32 @@ async function parseApiJsonResponse(response, fallbackMessage, options) {
   return data;
 }
 
+/* Import backup rows without exceeding the Cloudflare D1 per-invocation query
+ * budget. Awaiting every callback before taking the next slice also prevents a
+ * large restore from creating concurrent write bursts. */
+async function importEntriesInBatches(entries, sendBatch, batchSize) {
+  const size = Number.isInteger(batchSize) && batchSize > 0 ? batchSize : 4;
+  const totals = {
+    ok: true,
+    inserted: 0,
+    skipped: 0,
+    updated: 0,
+    failed: 0,
+    pendingVectorizeCount: 0,
+  };
+  for (let offset = 0; offset < entries.length; offset += size) {
+    const batch = await sendBatch(entries.slice(offset, offset + size));
+    totals.inserted += Number(batch && batch.inserted || 0);
+    totals.skipped += Number(batch && batch.skipped || 0);
+    totals.updated += Number(batch && batch.updated || 0);
+    totals.failed += Number(batch && batch.failed || 0);
+    totals.pendingVectorizeCount += Number(
+      batch && (batch.pendingVectorizeCount ?? (batch.pendingVectorize || []).length) || 0
+    );
+  }
+  return totals;
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     escHtml,
@@ -205,5 +249,7 @@ if (typeof module !== 'undefined' && module.exports) {
     normalizeEntry,
     createCfSseParser,
     parseApiJsonResponse,
+    normalizeSafeTag,
+    importEntriesInBatches,
   };
 }

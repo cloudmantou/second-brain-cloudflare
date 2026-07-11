@@ -49,4 +49,41 @@ describe("extractHashtags", () => {
     expect(cleanContent).toBe("note");
     expect(hashtags).toEqual(["tag_1", "item2"]);
   });
+
+  it("extracts Chinese hashtags and strips them from content", () => {
+    const { cleanContent, hashtags } = extractHashtags(
+      "正在优化 #记忆 #黑洞设计 和 #向量检索"
+    );
+    expect(cleanContent).toBe("正在优化 和");
+    expect(hashtags).toEqual(["记忆", "黑洞设计", "向量检索"]);
+  });
+
+  it("keeps Unicode letters, digits, underscores, and hyphens in hashtags", () => {
+    const { cleanContent, hashtags } = extractHashtags(
+      "release #Singularity-自托管_v2"
+    );
+    expect(cleanContent).toBe("release");
+    expect(hashtags).toEqual(["singularity-自托管_v2"]);
+  });
+
+  it("does not treat language syntax such as C# or F# as hashtags", () => {
+    const input = "阅读 C#中文教程 和 F#函数式编程";
+    expect(extractHashtags(input)).toEqual({ cleanContent: input, hashtags: [] });
+  });
+
+  it("keeps overlong Unicode hashtags in content instead of creating an invalid D1 pattern", () => {
+    const longTag = "记".repeat(16);
+    expect(extractHashtags(`内容 #${longTag}`)).toEqual({
+      cleanContent: `内容 #${longTag}`,
+      hashtags: [],
+    });
+  });
+
+  it("validates the normalized lowercase tag before removing it from content", () => {
+    const expandsWhenLowercased = "İ".repeat(23);
+    expect(extractHashtags(`note #${expandsWhenLowercased}`)).toEqual({
+      cleanContent: `note #${expandsWhenLowercased}`,
+      hashtags: [],
+    });
+  });
 });

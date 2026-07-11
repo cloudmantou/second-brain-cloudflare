@@ -4,13 +4,108 @@ export class D1Mock {
   entries: any[] = [];
   relations: any[] = [];
   revisions: any[] = [];
+  observations: any[] = [];
+  memories: any[] = [];
+  memorySources: any[] = [];
+  entities: any[] = [];
+  memoryEntities: any[] = [];
+  entityRelations: any[] = [];
+  statementCount = 0;
+  execCount = 0;
+  beforeClassificationCommit?: (row: any) => boolean | void;
 
   prepare(sql: string) {
     const s = sql.replace(/\s+/g, " ").trim();
     const db = this;
+    const resetClassification = (row: any) => {
+      Object.assign(row, {
+        classification_confidence: null,
+        classification_status: "pending",
+        classification_error: null,
+        classification_attempts: 0,
+        classification_next_attempt_at: null,
+        classification_started_at: null,
+        classification_version: 1,
+        classified_at: null,
+      });
+    };
 
     const makeStmt = (args: any[]) => ({
       async run() {
+        db.statementCount += 1;
+        
+        if (s.startsWith("INSERT INTO sb_observations")) {
+          const [id, content, source, metadata_json, created_at] = args;
+          db.observations.push({ id, content, source, metadata_json, created_at });
+          return { meta: { changes: 1 } };
+        }
+        if (s.startsWith("INSERT INTO sb_memories")) {
+          const [
+            id, content, kind, memory_class, importance, confidence,
+            entry_id, content_hash, observed_at, valid_from, valid_to,
+            reference_time, invalid_at, entities_json, created_at,
+          ] = args.length >= 15
+            ? args
+            : [...args.slice(0, 11), null, null, args[11], args[12]];
+          db.memories.push({
+            id, content, kind, memory_class, importance, confidence,
+            entry_id, content_hash, observed_at, valid_from, valid_to,
+            reference_time, invalid_at, entities_json, created_at,
+          });
+          return { meta: { changes: 1 } };
+        }
+        if (s.startsWith("INSERT INTO sb_memory_sources")) {
+          const [id, memory_id, observation_id, role, score, created_at] = args;
+          db.memorySources.push({ id, memory_id, observation_id, role, score, created_at });
+          return { meta: { changes: 1 } };
+        }
+        if (s.startsWith("UPDATE sb_entities")) {
+          const [entity_type, updated_at, id] = args;
+          const row = db.entities.find((e: any) => e.id === id);
+          if (row) {
+            row.mention_count = Number(row.mention_count ?? 0) + 1;
+            if (entity_type != null) row.entity_type = entity_type;
+            row.updated_at = updated_at;
+          }
+          return { meta: { changes: row ? 1 : 0 } };
+        }
+        if (s.startsWith("INSERT INTO sb_entities")) {
+          // VALUES (?, ?, ?, ?, '[]', '{}', 1, ?, ?)
+          const [id, name, name_normalized, entity_type, created_at, updated_at] = args;
+          db.entities.push({
+            id, name, name_normalized, entity_type,
+            aliases_json: '[]', metadata_json: '{}',
+            mention_count: 1,
+            created_at, updated_at,
+          });
+          return { meta: { changes: 1 } };
+        }
+        if (s.startsWith("INSERT INTO sb_memory_entities")) {
+          const [id, memory_id, entity_id, role, score, created_at] = args;
+          const exists = db.memoryEntities.some(
+            (row: any) => row.memory_id === memory_id && row.entity_id === entity_id && row.role === role
+          );
+          if (!exists) {
+            db.memoryEntities.push({ id, memory_id, entity_id, role, score, created_at });
+          }
+          return { meta: { changes: 1 } };
+        }
+        if (s.startsWith("INSERT INTO sb_entity_relations")) {
+          const [
+            id, from_entity_id, to_entity_id, relation_type, fact,
+            memory_id, observation_id, score,
+            valid_from, valid_to, invalid_at, reference_time,
+            metadata_json, created_at,
+          ] = args;
+          db.entityRelations.push({
+            id, from_entity_id, to_entity_id, relation_type, fact,
+            memory_id, observation_id, score,
+            valid_from, valid_to, invalid_at, reference_time,
+            metadata_json, created_at,
+          });
+          return { meta: { changes: 1 } };
+        }
+
         if (s.startsWith("INSERT INTO sb_memory_relations")) {
           const [id, from_memory_id, to_memory_id, relation_type, score, metadata_json, created_at] = args;
           db.relations.push({ id, from_memory_id, to_memory_id, relation_type, score, metadata_json, created_at });
@@ -71,18 +166,63 @@ export class D1Mock {
           return { meta: { changes: before - db.revisions.length } };
         }
         if (s.startsWith("INSERT INTO entries")) {
-          if (args.length >= 10) {
+          if (s.includes("classification_confidence")) {
+            const [
+              id, content, tags, source, created_at, vector_ids,
+              recall_count, importance_score, classification_confidence,
+              classification_status, classification_error, classification_attempts,
+              classification_next_attempt_at, classification_version, classified_at,
+              contradiction_wins, contradiction_losses, content_hash,
+            ] = args;
+            db.entries.push({
+              id, content, tags, source, created_at, vector_ids,
+              recall_count, importance_score, classification_confidence,
+              classification_status, classification_error, classification_attempts,
+              classification_next_attempt_at, classification_started_at: null,
+              classification_version, classified_at,
+              contradiction_wins, contradiction_losses,
+              content_hash: content_hash ?? null,
+            });
+          } else if (s.includes("content_hash") && args.length >= 7) {
+            const hasImportance = s.includes("importance_score") || args.length >= 8;
+            const id = args[0];
+            const content = args[1];
+            const tags = args[2];
+            const source = args[3];
+            const created_at = args[4];
+            const vector_ids = args[5];
+            const content_hash = args[6];
+            const importance_score = hasImportance && args.length >= 8 ? args[7] : 0;
+            const row = {
+              id, content, tags, source, created_at, vector_ids,
+              recall_count: 0, importance_score: importance_score ?? 0,
+              contradiction_wins: 0, contradiction_losses: 0,
+              content_hash,
+            };
+            resetClassification(row);
+            db.entries.push(row);
+          } else if (args.length >= 10) {
             const [id, content, tags, source, created_at, vector_ids, recall_count, importance_score, contradiction_wins, contradiction_losses] = args;
-            db.entries.push({ id, content, tags, source, created_at, vector_ids, recall_count, importance_score, contradiction_wins, contradiction_losses });
+            const row = { id, content, tags, source, created_at, vector_ids, recall_count, importance_score, contradiction_wins, contradiction_losses, content_hash: null };
+            resetClassification(row);
+            db.entries.push(row);
           } else {
             const [id, content, tags, source, created_at, vector_ids] = args;
-            db.entries.push({ id, content, tags, source, created_at, vector_ids, recall_count: 0, importance_score: 0, contradiction_wins: 0, contradiction_losses: 0 });
+            const row = { id, content, tags, source, created_at, vector_ids, recall_count: 0, importance_score: 0, contradiction_wins: 0, contradiction_losses: 0, content_hash: null };
+            resetClassification(row);
+            db.entries.push(row);
           }
           return { meta: { changes: 1 } };
         }
         if (s.startsWith("UPDATE entries SET content = ?, vector_ids")) {
           if (s.includes("AND content = ? AND tags = ? AND vector_ids = ?")) {
-            const [content, vector_ids, id, expected_content, expected_tags, expected_vector_ids] = args;
+            const hasHash = s.includes("content_hash");
+            const [content, vector_ids, a2, a3, a4, a5, a6] = args;
+            const content_hash = hasHash ? a2 : null;
+            const id = hasHash ? a3 : a2;
+            const expected_content = hasHash ? a4 : a3;
+            const expected_tags = hasHash ? a5 : a4;
+            const expected_vector_ids = hasHash ? a6 : a5;
             const row = db.entries.find(
               (e: any) =>
                 e.id === id &&
@@ -90,7 +230,12 @@ export class D1Mock {
                 e.tags === expected_tags &&
                 e.vector_ids === expected_vector_ids
             );
-            if (row) { row.content = content; row.vector_ids = vector_ids; }
+            if (row) {
+              row.content = content;
+              row.vector_ids = vector_ids;
+              if (hasHash) row.content_hash = content_hash;
+              if (s.includes("classification_status = 'pending'")) resetClassification(row);
+            }
             return { meta: { changes: row ? 1 : 0 } };
           }
           const [content, vector_ids, id] = args;
@@ -122,6 +267,116 @@ export class D1Mock {
           if (row) row.vector_ids = vector_ids;
           return { meta: { changes: row ? 1 : 0 } };
         }
+        if (s.startsWith("UPDATE entries SET classification_status = 'processing'")) {
+          // Bind order after PR-4:
+          // version, started_at, id, content, maxAttempts, now, leaseCutoff, version
+          const [currentVersion, started_at, id, content, maxAttempts, now, leaseCutoff] = args;
+          const row = db.entries.find((e: any) => {
+            if (e.id !== id || e.content !== content) return false;
+            if (String(e.tags ?? "[]").includes('"status:deprecated"')) return false;
+            const status = e.classification_status;
+            const staleVersion =
+              status === "succeeded" &&
+              Number(e.classification_version ?? 0) < Number(currentVersion);
+            if (staleVersion) return true;
+            if (Number(e.classification_attempts ?? 0) >= Number(maxAttempts)) return false;
+            return status == null || status === "pending" ||
+              (status === "retryable_error" && Number(e.classification_next_attempt_at ?? 0) <= Number(now)) ||
+              (status === "processing" && Number(e.classification_started_at ?? 0) <= Number(leaseCutoff));
+          });
+          if (row) {
+            const staleVersion =
+              row.classification_status === "succeeded" &&
+              Number(row.classification_version ?? 0) < Number(currentVersion);
+            row.classification_status = "processing";
+            row.classification_error = null;
+            row.classification_attempts = staleVersion
+              ? 1
+              : Number(row.classification_attempts ?? 0) + 1;
+            row.classification_started_at = started_at;
+            row.classification_next_attempt_at = null;
+          }
+          return { meta: { changes: row ? 1 : 0 } };
+        }
+        if (s.startsWith("UPDATE entries SET tags = ?, importance_score = ?, classification_confidence = ?")) {
+          const [
+            tags,
+            importance_score,
+            classification_confidence,
+            classification_version,
+            classified_at,
+            id,
+            content,
+            expected_tags,
+            started_at,
+          ] = args;
+          const candidate = db.entries.find((e: any) => e.id === id);
+          if (candidate && db.beforeClassificationCommit) {
+            const hook = db.beforeClassificationCommit;
+            const keepHook = hook(candidate);
+            if (keepHook !== true) db.beforeClassificationCommit = undefined;
+          }
+          const row = db.entries.find((e: any) =>
+            e.id === id && e.content === content && e.tags === expected_tags && e.classification_status === "processing" &&
+            e.classification_started_at === started_at
+          );
+          if (row) {
+            Object.assign(row, {
+              tags,
+              importance_score,
+              classification_confidence,
+              classification_status: "succeeded",
+              classification_error: null,
+              classification_next_attempt_at: null,
+              classification_started_at: null,
+              classification_version,
+              classified_at,
+            });
+          }
+          return { meta: { changes: row ? 1 : 0 } };
+        }
+        if (s.startsWith("UPDATE entries SET classification_status = ?, classification_error = ?")) {
+          const [classification_status, classification_error, classification_next_attempt_at, id, content, started_at] = args;
+          const row = db.entries.find((e: any) =>
+            e.id === id && e.content === content && e.classification_status === "processing" &&
+            e.classification_started_at === started_at
+          );
+          if (row) {
+            row.classification_status = classification_status;
+            row.classification_error = classification_error;
+            row.classification_next_attempt_at = classification_next_attempt_at;
+            row.classification_started_at = null;
+          }
+          return { meta: { changes: row ? 1 : 0 } };
+        }
+        if (s.startsWith("UPDATE entries SET classification_status = 'pending'")) {
+          if (s.includes("WHERE id = ? AND content = ?")) {
+            const [id, content, started_at] = args;
+            const row = db.entries.find((e: any) =>
+              e.id === id && e.content === content && e.classification_status === "processing" &&
+              e.classification_started_at === started_at
+            );
+            if (row) {
+              row.classification_status = "pending";
+              row.classification_error = null;
+              if (s.includes("classification_attempts = MAX")) {
+                row.classification_attempts = Math.max(0, Number(row.classification_attempts ?? 0) - 1);
+              }
+              row.classification_next_attempt_at = null;
+              row.classification_started_at = null;
+            }
+            return { meta: { changes: row ? 1 : 0 } };
+          }
+          const [id] = args;
+          const row = db.entries.find((e: any) => e.id === id);
+          if (row) {
+            row.classification_status = "pending";
+            row.classification_error = null;
+            row.classification_attempts = 0;
+            row.classified_at = null;
+          }
+          return { meta: { changes: row ? 1 : 0 } };
+        }
         if (s.startsWith("UPDATE entries SET tags = ?, importance_score = ?")) {
           const [tags, importance_score, id] = args;
           const row = db.entries.find((e: any) => e.id === id);
@@ -138,6 +393,30 @@ export class D1Mock {
           return { meta: { changes: row ? 1 : 0 } };
         }
         if (s.includes("UPDATE entries SET content = ?, tags = ?, source = ?, created_at = ?, vector_ids = ?,") && s.includes("recall_count")) {
+          if (s.includes("classification_confidence")) {
+            const hasHash = s.includes("content_hash");
+            const [
+              content, tags, source, created_at, vector_ids, recall_count, importance_score,
+              classification_confidence, classification_status, classification_error,
+              classification_attempts, classification_next_attempt_at, classification_version,
+              classified_at, contradiction_wins, contradiction_losses,
+              maybeHashOrId, maybeId,
+            ] = args;
+            const content_hash = hasHash ? maybeHashOrId : null;
+            const id = hasHash ? maybeId : maybeHashOrId;
+            const row = db.entries.find((e: any) => e.id === id);
+            if (row) {
+              Object.assign(row, {
+                content, tags, source, created_at, vector_ids, recall_count, importance_score,
+                classification_confidence, classification_status, classification_error,
+                classification_attempts, classification_next_attempt_at,
+                classification_started_at: null, classification_version, classified_at,
+                contradiction_wins, contradiction_losses,
+                ...(hasHash ? { content_hash } : {}),
+              });
+            }
+            return { meta: { changes: row ? 1 : 0 } };
+          }
           const [content, tags, source, created_at, vector_ids, recall_count, importance_score, contradiction_wins, contradiction_losses, id] = args;
           const row = db.entries.find((e: any) => e.id === id);
           if (row) {
@@ -159,7 +438,15 @@ export class D1Mock {
         }
         if (s.startsWith("UPDATE entries SET content = ?, tags = ?, vector_ids = ?")) {
           if (s.includes("AND content = ? AND tags = ? AND vector_ids = ?")) {
-            const [content, tags, vector_ids, id, expected_content, expected_tags, expected_vector_ids] = args;
+            const hasHash = s.includes("content_hash");
+            const content = args[0];
+            const tags = args[1];
+            const vector_ids = args[2];
+            const content_hash = hasHash ? args[3] : null;
+            const id = hasHash ? args[4] : args[3];
+            const expected_content = hasHash ? args[5] : args[4];
+            const expected_tags = hasHash ? args[6] : args[5];
+            const expected_vector_ids = hasHash ? args[7] : args[6];
             const row = db.entries.find(
               (e: any) =>
                 e.id === id &&
@@ -171,6 +458,8 @@ export class D1Mock {
               row.content = content;
               row.tags = tags;
               row.vector_ids = vector_ids;
+              if (hasHash) row.content_hash = content_hash;
+              if (s.includes("classification_status = 'pending'")) resetClassification(row);
             }
             return { meta: { changes: row ? 1 : 0 } };
           }
@@ -234,6 +523,26 @@ export class D1Mock {
           if (row) row.recall_count = (row.recall_count ?? 0) + 1;
           return { meta: { changes: row ? 1 : 0 } };
         }
+        if (s.startsWith("UPDATE entries SET importance_score = ?, classification_confidence")) {
+          const [
+            importance_score, classification_confidence, classification_version, classified_at, id,
+          ] = args;
+          const row = db.entries.find((e: any) => e.id === id);
+          if (row) {
+            Object.assign(row, {
+              importance_score,
+              classification_confidence,
+              classification_status: "succeeded",
+              classification_error: null,
+              classification_attempts: 1,
+              classification_next_attempt_at: null,
+              classification_started_at: null,
+              classification_version,
+              classified_at,
+            });
+          }
+          return { meta: { changes: row ? 1 : 0 } };
+        }
         if (s.startsWith("UPDATE entries SET importance_score")) {
           const [score, id] = args;
           const row = db.entries.find((e: any) => e.id === id);
@@ -249,6 +558,7 @@ export class D1Mock {
         return { meta: {} };
       },
       async first() {
+        db.statementCount += 1;
         if (s.includes("SELECT vector_ids FROM entries WHERE id")) {
           const row = db.entries.find((e: any) => e.id === args[0]);
           return row ? { vector_ids: row.vector_ids } : null;
@@ -267,7 +577,7 @@ export class D1Mock {
                 (!s.includes("tags NOT LIKE") || !String(e.tags ?? "[]").includes('"status:deprecated"'))
               ).length
             : 0;
-          const unclassified = db.entries.filter((e: any) => !String(e.tags).includes('"status:') && !String(e.tags).includes('"kind:')).length;
+          const unclassified = db.entries.filter((e: any) => e.classification_status !== "succeeded").length;
           return { count, avg_importance, unvectorized, unclassified };
         }
         if (s.includes("COUNT(*) as count") && s.includes("vector_ids = '[]'") && s.includes("created_at <")) {
@@ -283,8 +593,77 @@ export class D1Mock {
           const count = db.entries.filter((e: any) => !String(e.tags).includes('"status:') && !String(e.tags).includes('"kind:')).length;
           return { count };
         }
+        if (s.includes("COUNT(*) as count") && s.includes("classification_status = 'terminal_error'")) {
+          const count = db.entries.filter((e: any) => e.classification_status === "terminal_error").length;
+          return { count };
+        }
+        if (s.includes("COUNT(*) as count") && s.includes("classification_status = 'retryable_error'") && s.includes("classification_next_attempt_at >")) {
+          const now = Number(s.match(/classification_next_attempt_at > (\d+)/)?.[1] ?? 0);
+          const count = db.entries.filter((e: any) =>
+            e.classification_status === "retryable_error" &&
+            Number(e.classification_attempts ?? 0) < 3 &&
+            Number(e.classification_next_attempt_at ?? 0) > now
+          ).length;
+          return { count };
+        }
+        if (s.includes("COUNT(*) as count") && s.includes("classification_status IS NULL") && s.includes("classification_started_at")) {
+          const now = Number(s.match(/classification_next_attempt_at, 0\) <= (\d+)/)?.[1] ?? 0);
+          const leaseCutoff = Number(s.match(/classification_started_at, 0\) <= (\d+)/)?.[1] ?? 0);
+          const versionMatch = s.match(/classification_version, 0\) < (\d+)/);
+          const currentVersion = versionMatch ? Number(versionMatch[1]) : 2;
+          const count = db.entries.filter((e: any) => {
+            if (String(e.tags ?? "[]").includes('"status:deprecated"')) return false;
+            const status = e.classification_status;
+            if (status === "succeeded" && Number(e.classification_version ?? 0) < currentVersion) return true;
+            if (Number(e.classification_attempts ?? 0) >= 3) return false;
+            return status == null || status === "pending" ||
+              (status === "retryable_error" && Number(e.classification_next_attempt_at ?? 0) <= now) ||
+              (status === "processing" && Number(e.classification_started_at ?? 0) <= leaseCutoff);
+          }).length;
+          return { count };
+        }
         if (s.includes("COUNT(*) as count")) {
           return { count: db.entries.length };
+        }
+        if (s.includes("SELECT tags FROM entries") && s.includes("classification_started_at = ?")) {
+          const [id, content, startedAt] = args;
+          const row = db.entries.find((e: any) =>
+            e.id === id && e.content === content && e.classification_status === "processing" &&
+            e.classification_started_at === startedAt
+          );
+          return row ? { tags: row.tags } : null;
+        }
+        if (s.includes("SELECT classification_attempts FROM entries") && s.includes("classification_started_at = ?")) {
+          const [id, content, startedAt] = args;
+          const row = db.entries.find((e: any) =>
+            e.id === id && e.content === content && e.classification_status === "processing" &&
+            e.classification_started_at === startedAt
+          );
+          return row ? { classification_attempts: row.classification_attempts } : null;
+        }
+        if (s.includes("FROM sb_entities WHERE name_normalized = ?")) {
+          const key = String(args[0]);
+          const row = db.entities.find((e: any) => e.name_normalized === key);
+          return row ?? null;
+        }
+        if (s.includes("SELECT id FROM entries") && s.includes("content_hash = ?")) {
+          const hash = String(args[0]);
+          const row = db.entries.find((e: any) =>
+            e.content_hash === hash && !String(e.tags ?? "[]").includes('"status:deprecated"')
+          );
+          return row ? { id: row.id } : null;
+        }
+        if (
+          s.includes("SELECT id FROM entries") &&
+          s.includes("content = ?") &&
+          !s.includes("content_hash") &&
+          !s.includes("AND content = ?")
+        ) {
+          const content = String(args[0]);
+          const row = db.entries.find((e: any) =>
+            e.content === content && !String(e.tags ?? "[]").includes('"status:deprecated"')
+          );
+          return row ? { id: row.id } : null;
         }
         if (s.includes("WHERE id") && !s.includes("json_each")) {
           return db.entries.find((e: any) => e.id === args[0]) ?? null;
@@ -309,6 +688,7 @@ export class D1Mock {
         return null;
       },
       async all() {
+        db.statementCount += 1;
         if (
           s.includes("SELECT id, from_memory_id, to_memory_id, relation_type") &&
           s.includes("FROM sb_memory_relations")
@@ -457,7 +837,14 @@ export class D1Mock {
         if (s.includes("SELECT id, recall_count, importance_score") && s.includes("WHERE id IN")) {
           const results = db.entries
             .filter((e: any) => args.includes(e.id))
-            .map((e: any) => ({ id: e.id, recall_count: e.recall_count ?? 0, importance_score: e.importance_score ?? 0, contradiction_wins: e.contradiction_wins ?? 0, contradiction_losses: e.contradiction_losses ?? 0 }));
+            .map((e: any) => ({
+              id: e.id,
+              recall_count: e.recall_count ?? 0,
+              importance_score: e.importance_score ?? 0,
+              contradiction_wins: e.contradiction_wins ?? 0,
+              contradiction_losses: e.contradiction_losses ?? 0,
+              classification_confidence: e.classification_confidence ?? null,
+            }));
           return { results };
         }
         if (s.includes("FROM entries WHERE id IN") && s.includes("tags NOT LIKE")) {
@@ -573,6 +960,39 @@ export class D1Mock {
             .map((e: any) => ({ id: e.id, content: e.content, tags: e.tags }));
           return { results: rows };
         }
+        if (s.includes("classification_status IS NULL") && s.includes("classification_started_at") && s.includes("ORDER BY CASE")) {
+          const limitMatch = s.match(/LIMIT\s+(\d+)/i);
+          const limit = limitMatch ? parseInt(limitMatch[1], 10) : 14;
+          const now = Number(s.match(/classification_next_attempt_at, 0\) <= (\d+)/)?.[1] ?? 0);
+          const leaseCutoff = Number(s.match(/classification_started_at, 0\) <= (\d+)/)?.[1] ?? 0);
+          const versionMatch = s.match(/classification_version, 0\) < (\d+)/);
+          const currentVersion = versionMatch ? Number(versionMatch[1]) : 2;
+          const rows = [...db.entries]
+            .filter((e: any) => {
+              if (String(e.tags ?? "[]").includes('"status:deprecated"')) return false;
+              const status = e.classification_status;
+              if (status === "succeeded" && Number(e.classification_version ?? 0) < currentVersion) return true;
+              if (Number(e.classification_attempts ?? 0) >= 3) return false;
+              return status == null || status === "pending" ||
+                (status === "retryable_error" && Number(e.classification_next_attempt_at ?? 0) <= now) ||
+                (status === "processing" && Number(e.classification_started_at ?? 0) <= leaseCutoff);
+            })
+            .sort((a: any, b: any) => {
+              const rank = (e: any) => {
+                if (e.classification_status == null || e.classification_status === "pending") return 0;
+                if (e.classification_status === "succeeded") return 2;
+                return 1;
+              };
+              return rank(a) - rank(b) || a.created_at - b.created_at;
+            })
+            .slice(0, limit)
+            .map((e: any) => ({
+              id: e.id,
+              content: e.content,
+              classification_attempts: Number(e.classification_attempts ?? 0),
+            }));
+          return { results: rows };
+        }
         if (s.includes("vector_ids = '[]' AND created_at <") && s.includes("ORDER BY created_at DESC LIMIT")) {
           const cutoff = Number(args[0]);
           const limitMatch = s.match(/LIMIT\s+(\d+)/i);
@@ -589,6 +1009,7 @@ export class D1Mock {
           const filterArgs = args.slice(0, -1);
           let argIdx = 0;
           let rows = [...db.entries];
+          if (s.includes("1 = 0")) rows = [];
           if (s.includes("tags LIKE ?")) {
             const pattern = String(filterArgs[argIdx++]);
             const tag = pattern.replace(/%"/g, "").replace(/"%/g, "");
@@ -615,11 +1036,21 @@ export class D1Mock {
     };
   }
 
-  async exec(_sql: string) { }
+  async exec(sql: string) {
+    const statements = sql.split(";").filter(statement => statement.trim()).length;
+    this.execCount += statements;
+    this.statementCount += statements;
+  }
   async batch(stmts: any[]) { return Promise.all(stmts.map((s: any) => s.run())); }
   reset() {
     this.entries = [];
     this.relations = [];
     this.revisions = [];
+    this.observations = [];
+    this.memories = [];
+    this.memorySources = [];
+    this.entities = [];
+    this.memoryEntities = [];
+    this.entityRelations = [];
   }
 }
