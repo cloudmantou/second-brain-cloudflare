@@ -13,3 +13,4 @@ data/
 *.db-wal
 .omx/
 .playwright-mcp/
+.codex/

@@ -1,0 +1,207 @@
+/*
+ * Singularity atmosphere layer
+ *
+ * This file deliberately changes only visual surfaces. The existing app shell,
+ * navigation, screens, forms, and interaction handlers remain untouched.
+ */
+
+:root {
+  --singularity-void: #050504;
+  --singularity-photon: rgba(255, 196, 92, 0.72);
+  --singularity-photon-soft: rgba(211, 138, 94, 0.2);
+  --singularity-contour: rgba(38, 36, 31, 0.07);
+  --singularity-atmosphere-opacity: 0.08;
+  --singularity-panel-alpha: 0.965;
+}
+
+html[data-theme='dark'] {
+  --bg: #090806;
+  --bg-card: rgba(20, 18, 14, 0.94);
+  --bg-secondary: rgba(20, 18, 14, 0.94);
+  --surface-2: rgba(38, 34, 27, 0.94);
+  --surface-3: #100e0a;
+  --singularity-contour: rgba(255, 255, 255, 0.035);
+  --singularity-atmosphere-opacity: 0.72;
+  --singularity-panel-alpha: 0.88;
+}
+
+html,
+body {
+  background-color: var(--singularity-void);
+}
+
+body {
+  position: relative;
+}
+
+#app,
+#auth-overlay {
+  isolation: isolate;
+  overflow: hidden;
+}
+
+#app {
+  background: color-mix(in srgb, var(--bg) 96%, transparent);
+}
+
+#app::before,
+#auth-overlay::before {
+  content: '';
+  position: absolute;
+  inset: -18%;
+  z-index: 0;
+  pointer-events: none;
+  opacity: var(--singularity-atmosphere-opacity);
+  transform: translate3d(0, 0, 0) scale(1.02);
+  transform-origin: 82% 48%;
+  background:
+    radial-gradient(ellipse 27% 44% at 86% 48%, #000 0 48%, transparent 49.4%),
+    radial-gradient(
+      ellipse 28.5% 46.5% at 86% 48%,
+      transparent 0 47.8%,
+      var(--singularity-photon) 48.7%,
+      rgba(255, 248, 230, 0.42) 49.15%,
+      var(--singularity-photon-soft) 49.8%,
+      transparent 51.4%
+    ),
+    repeating-radial-gradient(
+      ellipse 52% 76% at 86% 48%,
+      var(--singularity-contour) 0 1px,
+      transparent 1px 10px
+    ),
+    radial-gradient(
+      ellipse 58% 20% at 86% 49%,
+      transparent 0 30%,
+      var(--singularity-photon-soft) 49%,
+      transparent 72%
+    ),
+    linear-gradient(105deg, transparent 48%, rgba(211, 138, 94, 0.035) 69%, transparent 90%);
+  -webkit-mask-image: linear-gradient(90deg, transparent 0%, rgba(0, 0, 0, 0.18) 32%, #000 58%, #000 100%);
+  mask-image: linear-gradient(90deg, transparent 0%, rgba(0, 0, 0, 0.18) 32%, #000 58%, #000 100%);
+  animation: singularity-breathe 24s ease-in-out infinite alternate;
+}
+
+#app::after,
+#auth-overlay::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: calc(var(--singularity-atmosphere-opacity) * 0.56);
+  background:
+    radial-gradient(circle at 76% 18%, rgba(255, 248, 230, 0.32) 0 0.55px, transparent 0.9px),
+    radial-gradient(circle at 68% 72%, rgba(255, 248, 230, 0.22) 0 0.5px, transparent 0.8px),
+    radial-gradient(circle at 94% 32%, rgba(255, 196, 92, 0.24) 0 0.45px, transparent 0.8px),
+    radial-gradient(circle at 58% 42%, rgba(255, 255, 255, 0.16) 0 0.45px, transparent 0.8px);
+  background-size: 211px 197px, 283px 251px, 347px 313px, 401px 367px;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 48%, #000);
+  mask-image: linear-gradient(90deg, transparent, #000 48%, #000);
+}
+
+#app > *,
+#auth-overlay > * {
+  position: relative;
+  z-index: 1;
+}
+
+#auth-overlay {
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+}
+
+html[data-theme='dark'] #auth-overlay {
+  background: rgba(5, 5, 4, 0.54);
+}
+
+html[data-theme='dark'] #auth-overlay .auth-card {
+  background: rgba(10, 9, 7, 0.84);
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.48);
+  backdrop-filter: blur(18px) saturate(0.82);
+  -webkit-backdrop-filter: blur(18px) saturate(0.82);
+}
+
+html[data-theme='dark'] #sidebar,
+html[data-theme='dark'] #topbar,
+html[data-theme='dark'] #navbar {
+  background: rgba(9, 8, 6, var(--singularity-panel-alpha));
+  backdrop-filter: blur(18px) saturate(0.84);
+  -webkit-backdrop-filter: blur(18px) saturate(0.84);
+}
+
+html[data-theme='dark'] #main-panel,
+html[data-theme='dark'] #screens,
+html[data-theme='dark'] .screen {
+  background: transparent;
+}
+
+html[data-theme='dark'] .input-bar,
+html[data-theme='dark'] .filter-bar {
+  background: rgba(9, 8, 6, 0.82);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+@keyframes singularity-breathe {
+  from {
+    transform: translate3d(0, 0, 0) scale(1.015);
+    filter: brightness(0.92);
+  }
+  to {
+    transform: translate3d(-0.35%, 0.2%, 0) scale(1.035);
+    filter: brightness(1.04);
+  }
+}
+
+@media (max-width: 767px) {
+  #app::before,
+  #auth-overlay::before {
+    inset: -14% -82% -10% -38%;
+    transform-origin: 70% 24%;
+    opacity: calc(var(--singularity-atmosphere-opacity) * 0.64);
+    -webkit-mask-image: linear-gradient(180deg, #000 0%, rgba(0, 0, 0, 0.7) 38%, transparent 76%);
+    mask-image: linear-gradient(180deg, #000 0%, rgba(0, 0, 0, 0.7) 38%, transparent 76%);
+  }
+
+  #app::after,
+  #auth-overlay::after {
+    opacity: calc(var(--singularity-atmosphere-opacity) * 0.38);
+    -webkit-mask-image: linear-gradient(180deg, #000, transparent 72%);
+    mask-image: linear-gradient(180deg, #000, transparent 72%);
+  }
+
+  html[data-theme='dark'] #auth-overlay .auth-card {
+    background: rgba(9, 8, 6, 0.78);
+    border-color: rgba(255, 255, 255, 0.06);
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.34);
+  }
+}
+
+@media (min-width: 768px) {
+  body {
+    background:
+      radial-gradient(circle at 84% 48%, rgba(211, 138, 94, 0.08), transparent 36%),
+      var(--singularity-void);
+  }
+
+  #app::before {
+    inset: -24% -10% -24% 14%;
+  }
+
+  #auth-overlay::before {
+    inset: -20% -8% -20% 8%;
+    opacity: calc(var(--singularity-atmosphere-opacity) * 1.08);
+  }
+
+  html[data-theme='dark'] #sidebar {
+    border-right-color: rgba(255, 255, 255, 0.07);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #app::before,
+  #auth-overlay::before {
+    animation: none;
+    transform: none;
+  }
+}
