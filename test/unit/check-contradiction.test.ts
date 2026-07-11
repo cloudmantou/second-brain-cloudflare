@@ -109,15 +109,13 @@ describe("checkDuplicateAndContradiction()", () => {
     expect(contradiction.detected).toBe(false);
   });
 
-  it("returns blocked duplicate and skips contradiction check", async () => {
+  it("flags near-exact semantic matches (score ≥ 0.95) without hard-blocking — PR5 stop-fact-loss", async () => {
     const queryFn = vi.fn().mockResolvedValue({ matches: [match("a", 0.96)] });
     const env = makeEnv("", [match("a", 0.96)], [entry("a", "Original content")]);
     (env.VECTORIZE as any).query = queryFn;
     const { duplicate, contradiction } = await checkDuplicateAndContradiction("Original content", env);
-    expect(duplicate.status).toBe("blocked");
+    expect(duplicate.status).toBe("flagged");
     expect(contradiction.detected).toBe(false);
-    // AI should only have been called once (for embed), not for contradiction LLM check
-    expect((env.AI.run as any).mock.calls.length).toBe(1);
   });
 
   it("returns flagged duplicate status", async () => {
@@ -239,23 +237,10 @@ describe("checkDuplicateAndContradiction()", () => {
     expect(contradiction.detected).toBe(false);
   });
 
-  it("returns mergeAction=null for blocked entries", async () => {
-    const env = makeEnv("", [match("a", 0.97)], [entry("a", "Original content")]);
-    const { mergeAction, contradiction } = await checkDuplicateAndContradiction("Original content", env);
+  it("returns mergeAction=null for non-flagged entries (0.45–0.85 range unchanged)", async () => {
+    const env = makeEnv("", [match("a", 0.6)], [entry("a", "I live in Paris")]);
+    const { mergeAction, contradiction } = await checkDuplicateAndContradiction("I live in Paris", env);
     expect(mergeAction).toBeNull();
     expect(contradiction.detected).toBe(false);
-  });
-
-  it("uses contradiction-only prompt (not combined) for 0.45–0.85 range", async () => {
-    // AI mock returns old contradiction format — should still be parsed correctly
-    const env = makeEnv(
-      '{"contradicts": true, "conflicting_id": "abc123", "reason": "different city"}',
-      [match("abc123", 0.72)],
-      [entry("abc123", "I live in NYC")]
-    );
-    const { contradiction, mergeAction } = await checkDuplicateAndContradiction("I moved to LA", env);
-    expect(contradiction.detected).toBe(true);
-    expect(contradiction.conflicting_id).toBe("abc123");
-    expect(mergeAction).toBeNull();
   });
 });

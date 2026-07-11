@@ -152,7 +152,7 @@ function graceMs(env: Env): number {
 
 // Exact duplicates are blocked by content hash only — never by vector score.
 // High semantic similarity always ADD-s a new row and links via typed relations.
-/** @deprecated Vector score no longer hard-blocks capture; kept for call-site clarity. */
+// Per PR5 (stop-fact-loss): hard-block only on content fingerprints, never on vector score.
 const DUPLICATE_BLOCK_THRESHOLD = 0.95;
 const DUPLICATE_FLAG_THRESHOLD = 0.85;
 const CANDIDATE_SCORE_THRESHOLD = 0.45;
@@ -729,6 +729,8 @@ export async function checkDuplicateAndContradiction(content: string, env: Env):
   )).slice(0, 5);
 
   // ── Similarity band: flag for relation planning; never block by score ───────
+  // PR5 (stop-fact-loss): high vector similarity ADDs the new row and links via
+  // typed relations, rather than hard-blocking (which silently drops new facts).
   let duplicate: DuplicateResult = { status: "unique" };
   if (matches.length) {
     const top = matches[0];
