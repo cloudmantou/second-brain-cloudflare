@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { promisify } from "node:util";
 import {
@@ -12,6 +13,10 @@ import {
 import { createExecutionContext } from "../../src/selfhost/env";
 
 const execFileAsync = promisify(execFile);
+const processErrorsProbe = path.resolve(
+  process.cwd(),
+  "test/fixtures/process-errors-unhandled-probe.mts"
+);
 
 describe("classifyUnhandledRejection", () => {
   it("ignores empty rejections only inside an MCP request context", () => {
@@ -169,43 +174,30 @@ describe("runtime rejection context", () => {
   });
 
   it("reaches the real Node unhandledRejection event only for MCP", async () => {
-    const modulePath = "./src/selfhost/process-errors.ts";
-    const runCase = async (insideMcp: boolean) => {
-      const trigger = insideMcp
-        ? 'runMcpRequest("req-real-path", () => { void Promise.reject(null); });'
-        : "void Promise.reject(null);";
-      const script = `
-        import {
-          getRuntimeRejectionContext,
-          handleUnhandledRejection,
-          runMcpRequest,
-        } from ${JSON.stringify(modulePath)};
-        const result = {};
-        process.once("unhandledRejection", (reason) => {
-          result.context = getRuntimeRejectionContext();
-          result.disposition = handleUnhandledRejection(reason, {
-            warn() {},
-            error() {},
-            exit(code) { result.exitCode = code; },
-          });
-          console.log(JSON.stringify(result));
-        });
-        ${trigger}
-        setTimeout(() => {}, 20);
-      `;
+    const runCase = async (mode: "mcp" | "bare") => {
+      // Prefer a real .mts probe over `node --eval` named imports: without
+      // package.json "type":"module", CI (Node 22 + tsx) can load the .ts
+      // source as CJS and reject ESM named imports.
       const { stdout } = await execFileAsync(
         process.execPath,
-        ["--import", "tsx", "--input-type=module", "--eval", script],
-        { cwd: process.cwd() }
+        ["--import", "tsx/esm", processErrorsProbe, mode],
+        {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            // Avoid parent-injected loaders (coverage / debuggers) breaking the probe.
+            NODE_OPTIONS: "",
+          },
+        }
       );
       return JSON.parse(stdout.trim());
     };
 
-    await expect(runCase(true)).resolves.toEqual({
+    await expect(runCase("mcp")).resolves.toEqual({
       context: { source: "mcp", requestId: "req-real-path" },
       disposition: "ignore-empty",
     });
-    await expect(runCase(false)).resolves.toEqual({
+    await expect(runCase("bare")).resolves.toEqual({
       disposition: "fatal",
       exitCode: 1,
     });
